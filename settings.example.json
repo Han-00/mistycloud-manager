@@ -1,0 +1,18 @@
+{
+  "auto_switch": true,
+  "min_traffic_mb": 30.0,
+  "expiry_threshold_seconds": 1800.0,
+  "account_lifetime_seconds": 86400.0,
+  "reserve_accounts": 2,
+  "v2ray_dir": "",
+  "proxy_port": 10808,
+  "sub_url": "",
+  "feishu_webhook": "",
+  "feishu_app_id": "",
+  "feishu_app_secret": "",
+  "feishu_open_id": "",
+  "win_x": null,
+  "win_y": null,
+  "win_w": null,
+  "win_h": null
+}

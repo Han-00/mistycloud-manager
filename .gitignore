@@ -1,0 +1,17 @@
+# 运行时数据 — 含账号凭据与密钥，绝不入库
+accounts.json
+settings.json
+*.log
+*.tmp
+
+# v2ray 二进制运行时（自动从 Misty 目录复制）
+v2ray_work/
+
+# 打包产物与缓存
+build/
+dist/
+__pycache__/
+*.pyc
+
+# 打包出的 exe 一律不入库
+*.exe
