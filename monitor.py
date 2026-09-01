@@ -7,6 +7,7 @@
   3. 每 5 分钟检查备用池：不足 → 自动注册补足
   4. 每 10 分钟心跳留痕，证明监控线程存活
 """
+import re
 import threading
 import time
 
@@ -22,6 +23,8 @@ class Monitor:
         self.log = log or (lambda msg: None)
         self.last_link: dict = {}   # {"ok": bool, "ip": str, "ts": str} 供 UI 展示
         self._fail_streak = 0
+        self._report_fail_ts = 0.0    # 日报推送失败日志节流（30 分钟一次）
+        self._report_hint_date = ""   # 「未配置飞书」提示每天只出一次
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -48,6 +51,8 @@ class Monitor:
                 if self.last_link.get("ok", True) and self.config.get("auto_switch", True):
                     # 链路已死时跳过流量检查（自愈流程已接管，避免同轮重复换号）
                     self._check_switch()
+                self._sysproxy_reconcile()
+                self._maybe_daily_report()
                 # 补号（5 分钟一次）
                 if time.time() - last_topup >= 300:
                     last_topup = time.time()
@@ -142,6 +147,12 @@ class Monitor:
             # 计算剩余
             total = traffic.get("total", 0)
             used = traffic.get("upload", 0) + traffic.get("download", 0)
+            # 日报统计：按服务端累计已用的增量累加（幂等，重复采样增量为 0）
+            try:
+                import stats
+                stats.add_traffic(acc["email"], used)
+            except Exception:
+                pass
             if total > 0:
                 remain_mb = (total - used) / 1024 / 1024
                 min_mb = float(self.config.get("min_traffic_mb", 30.0))
@@ -183,3 +194,84 @@ class Monitor:
                 self.log(f"补号完成: +{added} 个")
             else:
                 self.log("补号失败（临时邮箱或注册接口异常），5 分钟后重试")
+
+    # ---- 系统代理收敛 ----
+    def _sysproxy_reconcile(self):
+        """每轮对齐系统代理与配置开关/实际端口（兜手改注册表、换端口、外部覆盖）。"""
+        if self.engine is None:
+            return
+        try:
+            import sysproxy
+            # apply_if_enabled 的日志回调带 tag 参数，适配成 self.log 的单参签名
+            sysproxy.apply_if_enabled(self.config, self.engine,
+                                      log=lambda m, *_a: self.log(m))
+        except Exception:
+            pass
+
+    # ---- 每日运行日报 ----
+    def _maybe_daily_report(self):
+        """到点推送上一日运行日报（晚启动可补发；当日已推不重复；失败保留待推下轮重试）。"""
+        try:
+            import stats
+            s = stats.get()
+            s.touch()   # 日期翻转：把上一日计数固化为待推送
+            raw = str(self.config.get("daily_report_time", "") or "").strip()
+            if not re.match(r"^\d{1,2}:\d{2}$", raw):
+                return   # 空/非法 = 禁用日报
+            hh, mm = (int(x) for x in raw.split(":"))
+            if hh > 23 or mm > 59:
+                return
+            now = time.localtime()
+            if (now.tm_hour, now.tm_min) < (hh, mm):
+                return   # 未到推送时间
+            if s.is_reported_today():
+                return   # 今天已推送
+            pending = s.get_pending()
+            if not pending:
+                return   # 无上一日计数（如首日启动）
+            if self._no_channel_hint_if_unset():
+                return
+            from notify import push
+            if push(self._compose_report(pending)):
+                s.mark_reported()
+                self.log(f"日报已推送（{pending.get('date')}）")
+            else:
+                # 不记日期、保留 pending 下轮重试；失败日志 30 分钟节流
+                if time.time() - self._report_fail_ts >= 1800:
+                    self._report_fail_ts = time.time()
+                    self.log("日报推送失败（飞书未配置或网络异常），稍后重试")
+        except Exception as e:
+            self.log(f"日报异常: {e}")
+
+    def _no_channel_hint_if_unset(self) -> bool:
+        """飞书通道未配置 → 返回 True 跳过推送，且提示每天只出一次。"""
+        try:
+            from notify import feishu_configured
+            if feishu_configured():
+                return False
+        except Exception:
+            return True
+        today = time.strftime("%Y-%m-%d")
+        if self._report_hint_date != today:
+            self._report_hint_date = today
+            self.log("日报跳过：未配置飞书推送（设置里填 feishu_webhook 或应用三件套）")
+        return True
+
+    def _compose_report(self, pending: dict) -> str:
+        """组装日报文案：上一日换号次数 / 流量消耗 / 账号池 / 链路状态。"""
+        import stats
+        lines = [
+            f"📊 账号大师日报（{pending.get('date', '?')}）",
+            f"换号: 成功 {int(pending.get('switch_ok') or 0)} 次 / "
+            f"失败 {int(pending.get('switch_fail') or 0)} 次",
+            f"流量消耗: {stats.fmt_bytes(pending.get('traffic_used') or 0)}",
+        ]
+        active = self.pool.get_active()
+        lines.append(f"账号池: 在用 {active['email'] if active else '无'} · "
+                     f"有效账号 {self.pool.count_valid()}")
+        link = self.last_link or {}
+        if link.get("ok") and link.get("ip"):
+            lines.append(f"链路: 正常（出口 {link['ip']} @ {link.get('ts', '?')}）")
+        else:
+            lines.append("链路: 异常（监控自愈中）")
+        return "\n".join(lines)

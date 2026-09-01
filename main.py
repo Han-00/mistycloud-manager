@@ -43,7 +43,13 @@ def main():
     from v2ray_engine import V2RayEngine
     from switcher import Switcher
     from monitor import Monitor
-    from ui import AppUI
+    try:
+        from ui_web import WebAppUI as AppUI          # Web 版（需 pywebview）
+    except Exception:
+        try:
+            from ui_glass import GlassAppUI as AppUI   # 液态玻璃版（需 customtkinter）
+        except Exception:
+            from ui import AppUI                        # 降级：ttk 深色版
 
     config = Config()
     pool = AccountPool(config)
@@ -59,6 +65,18 @@ def main():
         ui.log(m, tag)
     switcher.log = _log
     monitor.log = _log
+
+    # 系统代理启动对账：开关关着但注册表备份还在 = 上次异常退出（崩溃/断电），
+    # 恢复用户原代理设置（优雅退出路径会在 _quit 里还原，这里兜非优雅路径）
+    try:
+        import sysproxy
+        if (sysproxy.available()
+                and not config.get("system_proxy", False)
+                and sysproxy.has_backup()):
+            sysproxy.disable()
+            _log("检测到系统代理残留（上次异常退出），已恢复原代理设置", "ok")
+    except Exception:
+        pass
 
     # 启动：优先使用已有账号（无则自动注册 + 换号）
     def bootstrap():
@@ -111,6 +129,13 @@ def main():
                 else:
                     pool.set_class_expire(active["email"], cloud.class_expire)
                     _log("已恢复当前账号代理", "ok")
+        # 系统代理收敛：开关开着且端口就绪则写入注册表（未就绪由监控每轮补齐）
+        try:
+            import sysproxy
+            sysproxy.apply_if_enabled(config, engine,
+                                      log=lambda m, *_a: _log(m, "ok"))
+        except Exception:
+            pass
         monitor.start()
 
     import threading

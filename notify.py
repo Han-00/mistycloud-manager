@@ -53,6 +53,13 @@ def push(text: str) -> bool:
     return False
 
 
+def feishu_configured() -> bool:
+    """是否配置了任一飞书推送通道（应用三件套 或 webhook）。"""
+    st = _settings()
+    return bool((st.get("feishu_app_id") and st.get("feishu_app_secret")
+                 and st.get("feishu_open_id")) or st.get("feishu_webhook"))
+
+
 def notify_switch(email: str, success: bool, ip_before: str = "",
                   ip_after: str = "", error: str = "") -> bool:
     """换号结果通知。成功/失败共用一条链路。"""

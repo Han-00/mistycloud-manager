@@ -96,6 +96,12 @@ class Switcher:
             result.duration = time.time() - start
             if not _internal:
                 self._switching = False
+        # 日报统计：手动+自动、逐候选每次都计数（并发守卫早退走不到这里）
+        try:
+            from stats import record_switch
+            record_switch(result.ok)
+        except Exception:
+            pass
         # 通知统一在出口处理：成功必通知；失败仅在调用方要求时通知
         # （自动换号逐候选静默，由 auto_switch 汇总后通知一次）
         if result.ok:
@@ -180,8 +186,11 @@ class Switcher:
 
         result.node = node
         result.ok = True
-        self.pool.set_active(email)
-        self.log(f"换号成功: {email}（直连 {direct or '?'} → 代理 {proxy}）")
+        retired = self.pool.set_active(email)
+        msg = f"换号成功: {email}（直连 {direct or '?'} → 代理 {proxy}）"
+        if retired:
+            msg += f"，已淘汰旧号 {retired}"
+        self.log(msg)
 
     def _restore_link(self, prev_node):
         """切换失败后用原节点恢复代理（不放弃现有链路）。"""

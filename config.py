@@ -26,6 +26,12 @@ DEFAULTS = {
     "feishu_open_id": "",
     # 窗口
     "win_x": None, "win_y": None, "win_w": None, "win_h": None,
+    # 界面/托盘
+    "ui_theme": "浅色云雾",          # 液态玻璃主题：浅色云雾 / 深海蓝 / 暮光紫
+    "minimize_to_tray": True,       # 关闭按钮 → 最小化到托盘（托盘不可用时忽略）
+    # 系统代理 / 日报
+    "system_proxy": False,          # 系统代理开关（期望状态；崩溃恢复的事实源）
+    "daily_report_time": "09:00",   # 每日日报推送时间（HH:MM，空串=禁用）
 }
 
 

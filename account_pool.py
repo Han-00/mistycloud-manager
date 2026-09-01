@@ -122,16 +122,36 @@ class AccountPool:
         self.save()
         return acc
 
-    def set_active(self, email: str):
+    def set_active(self, email: str) -> str | None:
+        """将指定账号设为在用，并直接淘汰被替换的旧在用号。
+
+        v2.0 语义：换号成功即放弃旧号——旧 active 不再降为 ready 混入备用池
+        （否则会被 pick_next 重新选中导致重复换号，且 count_valid 虚高使
+        补号失准）。被换下的旧 active 直接从库中删除，返回其 email；切换
+        前后是同一账号时返回 None。目标不在库中时不做任何淘汰（返回 None），
+        保证不会落得无在用号的空窗。
+        """
+        retired = None
         with self._lock:
+            if not any(a.get("email") == email for a in self.accounts):
+                # 目标不在库中（如切换进行中被手动删除）：不动旧在用号，
+                # 避免旧号被淘汰、新号又没进库导致无 active 的空窗
+                return None
+            # 旧在用号（active 且非目标）直接淘汰，不再降为 ready
+            keep = []
             for a in self.accounts:
-                if a.get("status") == "active":
-                    a["status"] = "ready"
+                if a.get("status") == "active" and a.get("email") != email:
+                    if retired is None:
+                        retired = a.get("email")
+                    continue
+                keep.append(a)
+            self.accounts = keep
             for a in self.accounts:
                 if a["email"] == email:
                     a["status"] = "active"
                     a["last_used_at"] = time.time()
         self.save()
+        return retired
 
     def mark_banned(self, email: str):
         with self._lock:
@@ -162,19 +182,29 @@ class AccountPool:
                     a["class_expire"] = ts
         self.save()
 
-    def remove(self, email: str):
+    def remove(self, email: str) -> bool:
+        """删除账号，返回是否真删了。
+
+        在用号（active）受保护：状态检查与删除在同一把锁内完成，杜绝
+        「检查时是备用、删除时已升为在用」的竞态（其淘汰统一由换号流程
+        的 set_active 接管）。账号不存在时返回 False。
+        """
         with self._lock:
+            acc = next((a for a in self.accounts if a.get("email") == email), None)
+            if acc is None or acc.get("status") == "active":
+                return False
             self.accounts = [a for a in self.accounts if a.get("email") != email]
         self.save()
+        return True
 
     def cleanup_expired(self) -> int:
         """删除已过期/失效账号，返回删除数量。
 
         ready 但已过期（客户端生命周期到点或服务端套餐到期）→ 先标 expired；
         所有 expired / banned（非 active）→ 直接从库中删除。
-        active 账号不在此处理：它的过期由监控的换号流程接管，避免把正在服务
-        代理的在用号从脚下抽走。被换号淘汰的旧在用号会先被 set_active 降为
-        ready，下一轮清理时检测到过期即删除。
+        active 账号不在此处理：它由监控的换号流程接管，避免把正在服务代理的
+        在用号从脚下抽走。被换号淘汰的旧在用号由 set_active 直接删除，不再
+        经此函数。
         """
         with self._lock:
             for a in self.accounts:

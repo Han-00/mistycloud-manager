@@ -15,3 +15,9 @@ __pycache__/
 
 # 打包出的 exe 一律不入库
 *.exe
+
+# 运行时统计数据
+stats.json
+
+# WorkBuddy 项目工作区（记忆/日志等本地数据）
+.workbuddy/

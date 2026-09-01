@@ -35,6 +35,7 @@ class V2RayEngine:
         self.work_dir = ""          # 实例工作目录（含 v2ray.exe 副本）
         self.port = int(config.get("proxy_port", 10808))
         self.current_node: dict | None = None
+        self._http_port_actual = 0   # 最近一次写配置的实际 HTTP inbound 端口
         self._discover()
 
     def _sync_port(self) -> int:
@@ -46,6 +47,18 @@ class V2RayEngine:
         except (TypeError, ValueError):
             pass
         return self.port
+
+    @property
+    def http_port(self) -> int:
+        """HTTP inbound 端口（系统代理指向它）。
+
+        写过配置则取实际值（模板自带 http inbound 时是模板原端口，
+        不是公式值）；未写过配置用公式兜底。
+        """
+        if self._http_port_actual > 0:
+            return self._http_port_actual
+        port = self.port
+        return port + 1 if port != 10809 else 10810
 
     # ---- 发现 v2ray 可执行文件 ----
     def _discover(self) -> bool:
@@ -155,7 +168,11 @@ class V2RayEngine:
                 "settings": {"allowTransparent": False},
             })
         cfg["inbounds"] = inbounds
-        cfg["_http_port"] = http_port  # 记录，供引擎查询（v2ray 忽略未知字段，已实测）
+        # 记录真实 http 端口：模板自带 http inbound 时是模板原端口而非公式值
+        # （v2ray 忽略未知字段，已实测）
+        cfg["_http_port"] = next((int(i.get("port", http_port)) for i in inbounds
+                                  if isinstance(i, dict) and i.get("protocol") == "http"),
+                                 http_port)
 
         # vmess outbound 整体替换；direct/block 等其余保留
         outbounds = [o for o in cfg.get("outbounds", [])
@@ -206,6 +223,10 @@ class V2RayEngine:
                     "v2ray 运行环境未就绪（未找到 Misty 的 v2ray 文件，"
                     "请安装 Misty 到默认路径或在 settings.json 设置 v2ray_dir）")
         cfg = self._build_config(node, self.port)
+        hp = next((int(i.get("port", 0)) for i in cfg.get("inbounds", [])
+                   if isinstance(i, dict) and i.get("protocol") == "http"), 0)
+        if hp > 0:
+            self._http_port_actual = hp
         path = os.path.join(self.work_dir, "config.json")
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
