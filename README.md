@@ -106,7 +106,24 @@ onedir 模式 + 排除 numpy/scipy 等大依赖，最终 ~35 MB。详见 `docs/�
 
 ## 协议
 
-本项目采用 [GPL-3.0](LICENSE) 协议发布。完整条款见 [LICENSE](LICENSE) 文件。
+本项目采用 **GPL-3.0** 协议发布。完整条款见 [LICENSE](LICENSE) 文件（GNU 官方逐字文本，未作任何改动）。
+
+```text
+Copyright (C) 2026 Han-00
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+```
 
 ## 致谢
 
