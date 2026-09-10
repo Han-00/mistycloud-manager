@@ -10,6 +10,15 @@
 ### 测试
 - `tests/test_stats.py` 新增 [10]-[13]：小时桶增量/幂等/回退、持久化与 series 升序、过期桶修剪、avg_daily_bytes 当天折算（1% 相对容差，消除测试与实现的秒级时钟漂移）。
 
+### 打包分发（可发给他人电脑使用）
+- **分发包由 onefile 改为 onedir 目录分发**（`账号大师Pro2.spec`：`EXE(exclude_binaries=True)` + `COLLECT`）。onefile 每次启动都要把运行时解压到临时目录（慢 3~5 秒、易被杀软拦），且资源走临时路径难以排障；onedir 下 `settings.json`/`accounts.json`/`stats.json`/`app.log`/`v2ray_work` 全部稳定落在 exe 同级目录。`upx=False`——避免杀软误报，也避免 UPX 压坏 Go 编译的 v2ray.exe。
+- **内嵌 v2ray 引擎（目标机零依赖）**：spec 把 `v2ray.exe`/`v2ctl.exe`/`geoip.dat`/`geosite.dat` 收进 `_internal/v2ray_bin/`；`V2RayEngine._discover()` 新增该目录为**最高优先候选**，并补上「已有 `v2ray_work`」作为末位兜底（Misty 被卸载/移动后仍可用）。目标机从此无需安装 Misty、无需装 Python。
+- **统一路径解析 `paths.py`（消除 5 份重复实现）**：config / account_pool / logger / stats / v2ray_engine 原先各抄了一份 `_base_dir()`，是「改一处漏四处」的典型债。现统一为 `paths.base_dir()`（可写数据）与 `paths.resource_dir()`（只读资源），并加入**可写探测**：exe 同级目录不可写时（例如解压到 `Program Files`）五处**同步**回退到 `%LOCALAPPDATA%\AccountMasterPro2`，避免出现「配置写 A 处、日志写 B 处、引擎又建在 C 处」的分裂。
+- **整包瘦身 29M**：spec 增加 `excludes` 排除 `numpy`/`scipy`/`pandas`/`matplotlib`/`torch`/`cv2`/`Qt`——项目与全部运行时依赖（pywebview / pythonnet / customtkinter / sv_ttk / pystray / Pillow）都不引用它们，但打包机上装着这些库时 PyInstaller 会顺着 hook 误收（实测 numpy 独占 27M）。**112M → 83M**。
+- **新增 `build_dist.py` 一键分发**：挪走旧产物（用重命名规避安全网关的批量删除拦截）→ 构建 → 冻结路径验证 → 附说明文件 → 洁净度检查（确保不含 settings/accounts/app.log/v2ray_work）→ 压缩 zip。修复两个坑：PyInstaller 删不掉 1k+ 文件的旧 dist 时会**静默沿用旧产物**（表现为「以为重打了，其实产物没变」）；版本号提取不能用 `## v?([\d.]+)`，否则先命中日期标题得到 `v2026`。
+- **新增 `tests/test_frozen_paths.py`**：伪造 `sys.frozen`/`sys._MEIPASS`/`sys.executable` 指向真实产物，离线验证「数据目录 = exe 同级 / 资源目录 = _internal / 内嵌引擎被优先命中 / prepare() 能把引擎复制到可写目录」，不启动程序、不连网、不动系统代理。
+- 文档：新增 `docs/分发使用说明.txt`（解压即用、WebView2 要求、数据位置、托盘行为、常见问题）。
+
 ## 2026-09-08
 
 ### 新增

@@ -4,23 +4,18 @@ app.log 写在程序同目录；供换号/监控等后台流程诊断。
 线程安全；写失败静默（日志永不影响业务）。
 """
 import os
-import sys
 import threading
 import time
+
+from paths import base_dir
 
 _lock = threading.Lock()
 _fp = None
 _path = ""
 
 
-def _base_dir() -> str:
-    if getattr(sys, "frozen", False):
-        return os.path.dirname(sys.executable)
-    return os.path.dirname(os.path.abspath(__file__))
-
-
 def log_path() -> str:
-    return os.path.join(_base_dir(), "app.log")
+    return os.path.join(base_dir(), "app.log")
 
 
 def filelog(msg: str) -> None:

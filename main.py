@@ -81,8 +81,9 @@ def main():
     # 启动：优先使用已有账号（无则自动注册 + 换号）
     def bootstrap():
         if not engine._discover():
-            _log("未找到 v2ray：请安装 Misty 客户端到默认路径，"
-                 "或在 settings.json 里设置 v2ray_dir 指向 v2ray.exe 所在目录", "err")
+            _log("未找到 v2ray 引擎：请确认程序目录完整（分发版不要只复制 exe，"
+                 "需连同 _internal 目录一起），或在 settings.json 里设置 "
+                 "v2ray_dir 指向 v2ray.exe 所在目录", "err")
             monitor.start()
             return
         if pool.count() == 0:

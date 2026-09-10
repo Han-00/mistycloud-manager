@@ -8,9 +8,10 @@
 """
 import json
 import os
-import sys
 import threading
 import time
+
+from paths import base_dir
 
 _DEFAULT = {
     "date": "",                # 当前计数所属日（YYYY-MM-DD）
@@ -26,14 +27,8 @@ _DEFAULT = {
 _HOURLY_KEEP_DAYS = 8          # 小时桶保留天数（热力图用 7 天，多留 1 天余量）
 
 
-def _base_dir() -> str:
-    if getattr(sys, "frozen", False):
-        return os.path.dirname(sys.executable)
-    return os.path.dirname(os.path.abspath(__file__))
-
-
 def stats_path() -> str:
-    return os.path.join(_base_dir(), "stats.json")
+    return os.path.join(base_dir(), "stats.json")
 
 
 def _atomic_write_json(path: str, data) -> None:

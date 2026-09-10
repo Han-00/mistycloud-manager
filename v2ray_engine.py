@@ -16,15 +16,10 @@ import time
 
 from config import Config
 from http_client import HttpError
+from paths import base_dir, resource_dir
 
 # GUI 进程（pythonw / 打包 exe）里调 netstat/tasklist/taskkill 必须不弹控制台黑窗
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-
-
-def _base_dir() -> str:
-    if getattr(sys, "frozen", False):
-        return os.path.dirname(sys.executable)
-    return os.path.dirname(os.path.abspath(__file__))
 
 
 class V2RayEngine:
@@ -65,13 +60,24 @@ class V2RayEngine:
 
     # ---- 发现 v2ray 可执行文件 ----
     def _discover(self) -> bool:
-        """找 v2ray.exe。优先级：配置 → 默认 Misty 路径 → 常见位置。"""
+        """找 v2ray.exe。
+
+        优先级（打包分发场景的关键）：
+          1. 包内嵌的引擎（_internal/v2ray_bin）—— 目标机无需装 Misty，零依赖
+          2. settings.json 的 v2ray_dir —— 用户显式指定
+          3. Misty 安装位置 —— 老用户机器（源码运行时走这条）
+          4. 已有工作目录 v2ray_work —— 引擎已复制过一次，Misty 被卸载/移动也不受影响
+        """
         candidates = []
+        bundled = os.path.join(resource_dir(), "v2ray_bin")
+        if os.path.isdir(bundled):
+            candidates.append(bundled)
         v2ray_dir = str(self.config.get("v2ray_dir", "") or "")
         if v2ray_dir:
             candidates.append(v2ray_dir)
         candidates.append(os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Misty"))
         candidates.append(r"C:\Users\kesai\AppData\Local\Programs\Misty")
+        candidates.append(os.path.join(base_dir(), "v2ray_work"))
         for d in candidates:
             exe = os.path.join(d, "v2ray.exe")
             if os.path.exists(exe):
@@ -87,7 +93,7 @@ class V2RayEngine:
             return False
         try:
             src = self.v2ray_source_dir
-            self.work_dir = os.path.join(_base_dir(), "v2ray_work")
+            self.work_dir = os.path.join(base_dir(), "v2ray_work")
             os.makedirs(self.work_dir, exist_ok=True)
             for f in self.REQUIRED_FILES:
                 s = os.path.join(src, f)

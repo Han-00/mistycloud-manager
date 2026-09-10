@@ -8,23 +8,17 @@ import json
 import os
 import random
 import string
-import sys
 import time
 import threading
 
 from config import Config
+from paths import base_dir
 from cloud_api import CloudAccount, HttpError
 from http_client import get, get_json, post_json
 
 
-def _base_dir() -> str:
-    if getattr(sys, "frozen", False):
-        return os.path.dirname(sys.executable)
-    return os.path.dirname(os.path.abspath(__file__))
-
-
 def accounts_path() -> str:
-    return os.path.join(_base_dir(), "accounts.json")
+    return os.path.join(base_dir(), "accounts.json")
 
 
 def _atomic_write_json(path: str, data) -> None:

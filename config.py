@@ -4,7 +4,8 @@
 """
 import json
 import os
-import sys
+
+from paths import base_dir
 
 DEFAULTS = {
     # 自动换号
@@ -69,15 +70,8 @@ DEFAULTS = {
 }
 
 
-def _base_dir() -> str:
-    """配置/数据目录：exe 同目录（冻结）或项目目录（源码运行）。"""
-    if getattr(sys, "frozen", False):
-        return os.path.dirname(sys.executable)
-    return os.path.dirname(os.path.abspath(__file__))
-
-
 def config_path() -> str:
-    return os.path.join(_base_dir(), "settings.json")
+    return os.path.join(base_dir(), "settings.json")
 
 
 class Config:
