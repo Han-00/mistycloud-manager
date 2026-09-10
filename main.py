@@ -29,6 +29,38 @@ def _single_instance() -> bool:
         return True
 
 
+def _load_ui():
+    """按 Web → 玻璃 → ttk 顺序加载界面实现。
+
+    返回 (AppUI 类, 实现名, 回退原因列表)。
+
+    回退必须留痕——静默降级会把「界面怎么突然变回旧版了」变成无法定位的玄学：
+    pywebview 没装、WebView2 初始化失败、打包漏了模块，三种原因表现完全一样。
+    返回原因列表而非直接打日志，是因为此刻 UI 还没建起来，日志无处可去，
+    要等 main() 里 _log 挂好之后再补报。
+
+    ⚠ 必须**显式探测依赖**，不能只 import ui_web：
+    ui_web.py 是在 run() 里才惰性 `import webview` 的，顶层不引入 pywebview，
+    所以光 import 它永远不会失败——依赖缺失要等到建窗口时才炸，
+    回退链就形同虚设（实测：屏蔽 pywebview 后仍会选中 Web 版，然后启动即崩）。
+    """
+    notes = []
+    try:
+        import webview  # noqa: F401  显式探测，见上方说明
+        from ui_web import WebAppUI
+        return WebAppUI, "Web 版 (pywebview)", notes
+    except Exception as e_web:
+        notes.append(f"ui_web 加载失败: {e_web!r}")
+    try:
+        import customtkinter  # noqa: F401  ui_glass 顶层已引入，这里保持对称
+        from ui_glass import GlassAppUI
+        return GlassAppUI, "玻璃版 (customtkinter)", notes
+    except Exception as e_glass:
+        notes.append(f"ui_glass 加载失败: {e_glass!r}")
+    from ui import AppUI
+    return AppUI, "ttk 版（终极降级）", notes
+
+
 def main():
     if not _single_instance():
         try:
@@ -43,13 +75,7 @@ def main():
     from v2ray_engine import V2RayEngine
     from switcher import Switcher
     from monitor import Monitor
-    try:
-        from ui_web import WebAppUI as AppUI          # Web 版（需 pywebview）
-    except Exception:
-        try:
-            from ui_glass import GlassAppUI as AppUI   # 液态玻璃版（需 customtkinter）
-        except Exception:
-            from ui import AppUI                        # 降级：ttk 深色版
+    AppUI, ui_impl, ui_notes = _load_ui()
 
     config = Config()
     pool = AccountPool(config)
@@ -65,6 +91,12 @@ def main():
         ui.log(m, tag)
     switcher.log = _log
     monitor.log = _log
+
+    # 界面实现留痕：正常时一行白字，发生回退时连同原因标红——
+    # 出问题第一个该看的就是这条。
+    _log(f"界面实现：{ui_impl}", "err" if ui_notes else "")
+    for _note in ui_notes:
+        _log(f"  ↳ 回退原因 — {_note}", "err")
 
     # 系统代理启动对账：开关关着但注册表备份还在 = 上次异常退出（崩溃/断电），
     # 恢复用户原代理设置（优雅退出路径会在 _quit 里还原，这里兜非优雅路径）

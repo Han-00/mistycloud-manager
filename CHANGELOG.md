@@ -19,6 +19,12 @@
 - **新增 `tests/test_frozen_paths.py`**：伪造 `sys.frozen`/`sys._MEIPASS`/`sys.executable` 指向真实产物，离线验证「数据目录 = exe 同级 / 资源目录 = _internal / 内嵌引擎被优先命中 / prepare() 能把引擎复制到可写目录」，不启动程序、不连网、不动系统代理。
 - 文档：新增 `docs/分发使用说明.txt`（解压即用、WebView2 要求、数据位置、托盘行为、常见问题）。
 
+### 修复
+- **界面回退链形同虚设，实际是「启动即崩」**：`ui_web.py` 只在 `run()` 内部惰性 `import webview`，顶层不引入 pywebview——于是「没装 pywebview」时 `from ui_web import WebAppUI` 依然成功，程序选中 Web 版，直到建窗口才抛 ImportError 直接崩溃，**根本不会回退**（回退链实际只对 ui_glass 有效，因为它顶层就 `import customtkinter`）。现 `_load_ui()` 显式探测依赖再选择实现，并抽成独立函数以便测试。
+- **回退不再静默**：启动日志新增一行「界面实现：xxx」，发生回退时连同每条原因标红——过去 pywebview 缺失、WebView2 起不来、打包漏模块三种情况表现完全一样（界面莫名变旧），无从定位。
+- **`tests/test_wiring.py` 失效断言**：它引用的是重构前的控件名（`ui.lbl_traffic` / `lbl_expire` / `lbl_proxy`，现版为 `card_traffic_val` / `card_expire_val` / `card_link_val`），早已跑不起来。控件文本改走容错读取（读不到只提示、不再制造假失败），硬断言只保留与 UI 无关的事实（「引擎确实在跑」）；文件头补注该测试会真实连网换号、占用代理端口，跑前须退出正在运行的实例。
+- 新增 `tests/test_ui_fallback.py`：用 `sys.modules[m] = None` 屏蔽依赖，不依赖环境差异，锁定三级回退的落点与「每次回退都留痕」这一机制——上述 pywebview 回退失效问题正是它第一次运行就抓出来的。
+
 ## 2026-09-08
 
 ### 新增
