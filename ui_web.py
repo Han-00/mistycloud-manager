@@ -23,6 +23,7 @@ import threading
 import time
 
 from account_pool import AccountPool
+import autostart
 from config import Config
 from settings_schema import apply_settings
 from switcher import Switcher
@@ -87,6 +88,10 @@ class _JsApi:
     def save_settings(self, payload):
         return self._ui.save_settings(dict(payload or {}))
 
+    # ---- 开机自启（走注册表，不属于 config，故不经过 settings_schema）----
+    def set_autostart(self, on):
+        return self._ui.set_autostart(bool(on))
+
 
 class WebAppUI:
     def __init__(self, config: Config, pool: AccountPool, switcher: Switcher,
@@ -141,6 +146,17 @@ class WebAppUI:
         self._emit("window.App && App.log(%s, %s)"
                    % (json.dumps(str(msg), ensure_ascii=False),
                       json.dumps(str(tag or ""))))
+
+    def toast(self, msg: str, ok: bool = True):
+        """桌面浮窗提示（对应玻璃版的 _toast），任意线程可调。
+
+        与 log 的分工：log 是给「回头看」的流水账，toast 是给「此刻就看见」的
+        操作回执——换号/删除这类用户主动触发且会离开当前视线的动作，
+        只写日志等于没反馈。
+        """
+        self._emit("window.App && App.toast(%s, %s)"
+                   % (json.dumps(str(msg), ensure_ascii=False),
+                      "true" if ok else "false"))
 
     def _set_busy(self, on: bool, label: str = ""):
         self._emit("window.App && App.setBusy(%s, %s)"
@@ -284,8 +300,10 @@ class WebAppUI:
             r = self.switcher.auto_switch("手动触发")
             if r.ok:
                 self.log(f"换号成功: {r.email} → 代理 {r.proxy_ip}", "ok")
+                self.toast(f"换号成功 {r.email}")
             else:
                 self.log(f"换号失败: {r.error}", "err")
+                self.toast(f"换号失败: {r.error}", ok=False)
             self._set_busy(False)
             self.push_state()
             self.refresh_traffic_async()
@@ -303,8 +321,10 @@ class WebAppUI:
             r = self.switcher.switch_to_email(email)
             if r.ok:
                 self.log(f"切换成功: {email} → 代理 {r.proxy_ip}", "ok")
+                self.toast(f"切换成功 {email}")
             else:
                 self.log(f"切换失败: {r.error}", "err")
+                self.toast(f"切换失败: {r.error}", ok=False)
             self._set_busy(False)
             self.push_state()
             self.refresh_traffic_async()
@@ -323,25 +343,31 @@ class WebAppUI:
         """删除账号（在用号除外，其淘汰由换号流程接管）。"""
         if self.switcher.is_switching():
             self.log("切换进行中，请完成后再删除账号", "err")
+            self.toast("切换进行中，请稍后再试", ok=False)
             return
         acc = next((a for a in self.pool.all() if a.get("email") == email), None)
         if acc is None:
             self.log(f"账号 {email} 已不在库中", "err")
+            self.toast(f"账号已不在库中: {email}", ok=False)
             self.push_state()
             return
         if acc.get("status") == "active":
             self.log(f"在用号 {email} 不能直接删除，请先换号后再删", "err")
+            self.toast("在用号不能删除，请先换号", ok=False)
             return
         if self.pool.remove(email):
             self.log(f"已删除账号 {email}", "ok")
+            self.toast(f"已删除 {email}")
         else:
             self.log(f"删除取消：{email} 已是当前在用号或已不在库中", "err")
+            self.toast("删除失败：账号已不在库中", ok=False)
         self.push_state()
 
     def delete_inactive(self):
         """清理所有过期 / 失效账号。"""
         if self.switcher.is_switching():
             self.log("切换进行中，请完成后再清理", "err")
+            self.toast("切换进行中，请稍后再试", ok=False)
             return
         n = 0
         for a in list(self.pool.all()):
@@ -349,6 +375,8 @@ class WebAppUI:
                 if self.pool.remove(a.get("email", "")):
                     n += 1
         self.log(f"清理完成：删除 {n} 个失效账号", "ok" if n else "")
+        # 「没得可清」是正常结果而非失败，别用红色 ✗ 吓人
+        self.toast(f"已清理 {n} 个失效账号" if n else "没有可清理的失效账号")
         self.push_state()
 
     # ================= 开关 =================
@@ -412,7 +440,26 @@ class WebAppUI:
                                              "feishu_app_secret",
                                              "feishu_open_id")),
             "daily_report_time": self.config.get("daily_report_time", "") or "",
+            # 开机自启存在注册表里，不是 config 项。
+            # 放进 get_settings 只是为了让设置页一次加载就填好所有控件；
+            # 它的写路径是独立的 set_autostart()，不走 save_settings。
+            "autostart": autostart.is_enabled(),
         }
+
+    def set_autostart(self, on: bool) -> dict:
+        """开机自启开关：立即生效（与自动换号/系统代理一致），不等「保存设置」。
+
+        返回 {"ok": bool, "error": str|None}。**不在这里弹提示**——前端拿到
+        失败结果后要先把开关回滚，再统一提示；后端也弹一次就会提示两遍。
+        注册表可能因组策略/权限受限而写不进去，静默失败会让用户以为设成功了。
+        """
+        try:
+            autostart.set_enabled(bool(on))
+        except Exception as e:
+            self.log("开机自启设置失败（注册表访问受限）", "err")
+            return {"ok": False, "error": str(e)}
+        self.log(f"开机自启: {'开' if on else '关'}", "ok" if on else "")
+        return {"ok": True, "error": None}
 
     def save_settings(self, p: dict) -> dict:
         """校验并落盘；端口变更且引擎在跑则后台重启代理。

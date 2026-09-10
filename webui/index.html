@@ -134,6 +134,10 @@
 
       <!-- ===== 日志页 ===== -->
       <section class="page" id="page-logs">
+        <div class="log-head">
+          <span class="sec-title" style="margin:0">运行日志</span>
+          <button class="qbtn sm" id="btnClearLogPage">清空</button>
+        </div>
         <div class="logpage" id="logPage"></div>
       </section>
 
@@ -157,6 +161,10 @@
           <div class="set-row">
             <div><div class="t">系统代理</div><div class="d">换号后自动写入 Windows 系统代理</div></div>
             <label class="switch"><input type="checkbox" id="swProxy"><span class="track"><span class="thumb"></span></span></label>
+          </div>
+          <div class="set-row">
+            <div><div class="t">开机自启</div><div class="d">登录 Windows 后自动启动本程序（写入当前用户启动项）</div></div>
+            <label class="switch"><input type="checkbox" id="swAutostart"><span class="track"><span class="thumb"></span></span></label>
           </div>
         </div>
 
@@ -207,10 +215,17 @@
   <div class="drawer-tab" id="drawerTab">
     <span class="arrow">▲</span> 运行日志
     <span class="errdot" id="errDot"></span>
-    <span style="margin-left:auto;font-size:11px;color:var(--dim)" id="drawerHint">暂无日志</span>
+    <span class="drawer-hint" id="drawerHint">暂无日志</span>
+    <button class="log-clear" id="btnClearLogDrawer" title="清空日志">清空</button>
   </div>
   <div class="drawer-body" id="drawerLog"></div>
 </div>
+
+<!-- ===== 浮窗提示（右下角，4s 自动消失） ===== -->
+<div class="toasts" id="toasts"></div>
+
+<!-- ===== 账号行右键菜单 ===== -->
+<div class="ctxmenu" id="ctxMenu"></div>
 
 <!-- ===== 确认弹窗 ===== -->
 <div class="modal-mask" id="modalMask">
@@ -220,6 +235,18 @@
     <div class="mops">
       <button class="qbtn" id="modalCancel">取消</button>
       <button class="qbtn danger" id="modalOk">确认删除</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== 账号详情弹窗 ===== -->
+<div class="modal-mask" id="infoMask">
+  <div class="modal">
+    <div class="mt" id="infoTitle">账号详情</div>
+    <div class="md"><div class="info-list" id="infoBody"></div></div>
+    <div class="mops">
+      <button class="qbtn" id="infoCopy">复制邮箱</button>
+      <button class="qbtn" id="infoClose">关闭</button>
     </div>
   </div>
 </div>

@@ -19,6 +19,7 @@ from tkinter import messagebox
 import customtkinter as ctk
 
 from account_pool import AccountPool
+import autostart
 from config import Config
 from settings_schema import apply_settings
 from switcher import Switcher
@@ -93,7 +94,6 @@ STATUS_TEXT = {"active": "● 在用", "ready": "● 备用",
 STATUS_COLOR = {}
 
 FONT = "Microsoft YaHei UI"
-AUTOSTART_NAME = "AccountMasterPro2"
 
 
 def _load_palette(name: str):
@@ -889,37 +889,13 @@ class GlassAppUI:
     def _tray_quit(self, *_):
         self._post(self._quit)
 
-    # ---- 开机自启（HKCU Run 注册表）----
+    # ---- 开机自启（实现已抽到 autostart 模块，与 Web 版共用）----
     def _get_autostart(self) -> bool:
-        try:
-            import winreg
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
-                                r"Software\Microsoft\Windows\CurrentVersion\Run") as k:
-                cmd, _ = winreg.QueryValueEx(k, AUTOSTART_NAME)
-                return bool(cmd)
-        except Exception:
-            return False
+        return autostart.is_enabled()
 
     def _set_autostart(self, enable: bool):
         try:
-            import winreg
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
-                                r"Software\Microsoft\Windows\CurrentVersion\Run",
-                                0, winreg.KEY_SET_VALUE) as k:
-                if enable:
-                    if getattr(sys, "frozen", False):
-                        cmd = f'"{sys.executable}"'
-                    else:
-                        pyw = os.path.join(sys.base_prefix, "pythonw.exe")
-                        main_py = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                               "main.py")
-                        cmd = f'"{pyw}" "{main_py}"'
-                    winreg.SetValueEx(k, AUTOSTART_NAME, 0, winreg.REG_SZ, cmd)
-                else:
-                    try:
-                        winreg.DeleteValue(k, AUTOSTART_NAME)
-                    except FileNotFoundError:
-                        pass
+            autostart.set_enabled(bool(enable))
         except Exception:
             self.log("开机自启设置失败（注册表访问受限）", "err")
 

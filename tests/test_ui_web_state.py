@@ -18,6 +18,7 @@ sys.stdout.reconfigure(encoding="utf-8")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import account_pool  # noqa: E402
+import autostart  # noqa: E402
 import stats  # noqa: E402
 
 _TMP_JSON = os.path.join(tempfile.mkdtemp(), "accounts.json")
@@ -167,6 +168,45 @@ def main():
     left = {a["email"] for a in pool.all()}
     assert left == {"act@x.com", "ok@x.com"}, f"清理范围错误: {left}"
     print("[8] 批量清理只删 expired/banned，在用号与有效备用保留 ✓")
+
+    # ---- [9] toast 推送：确实把 JS 排进了队列，且成功/失败标记正确 ----
+    ui, pool = build([mk("a@x.com", "active", now)])
+    while not ui._q.empty():
+        ui._q.get()
+    ui.toast("换号成功 a@x.com")
+    ui.toast("换号失败: 超时", ok=False)
+    js = []
+    while not ui._q.empty():
+        js.append(ui._q.get())
+    assert len(js) == 2, f"应推送 2 条 toast，实际 {len(js)}: {js}"
+    assert all("App.toast(" in s for s in js), js
+    assert js[0].rstrip().endswith("true)"), f"成功提示应为 true: {js[0]}"
+    assert js[1].rstrip().endswith("false)"), f"失败提示应为 false: {js[1]}"
+    print("[9] toast 推送：入队 2 条、成功/失败标记正确 ✓")
+
+    # ---- [10] get_settings 带 autostart，且与 autostart 模块同源 ----
+    ui, pool = build([mk("a@x.com", "active", now)])
+    s = ui.get_settings()
+    assert "autostart" in s, f"设置里缺 autostart: {s.keys()}"
+    assert s["autostart"] == autostart.is_enabled(), \
+        "get_settings 的 autostart 必须直接来自 autostart 模块，不能另算一份"
+    print("[10] get_settings 含 autostart 且与 autostart 模块同源 ✓")
+
+    # ---- [11] set_autostart：成功 / 底层抛异常都不能崩，且失败要有明确返回 ----
+    ui, pool = build([mk("a@x.com", "active", now)])
+    _orig_set = autostart.set_enabled
+    try:
+        autostart.set_enabled = lambda on: None
+        assert ui.set_autostart(True) == {"ok": True, "error": None}
+
+        def _boom(_on):
+            raise PermissionError("拒绝访问")
+        autostart.set_enabled = _boom
+        r = ui.set_autostart(True)
+        assert r["ok"] is False and r["error"], f"注册表受限应返回失败: {r}"
+    finally:
+        autostart.set_enabled = _orig_set
+    print("[11] set_autostart 成功/受限两条路径都不崩、失败有明确返回 ✓")
 
     print("\n== Web 前端状态与删除保护测试通过 ==")
 

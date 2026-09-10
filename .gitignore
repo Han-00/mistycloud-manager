@@ -10,6 +10,10 @@ v2ray_work/
 # 打包产物与缓存
 build/
 dist/
+# build_dist.py 每次构建会把旧目录改名成 build_stale_<时间> 挪开
+# （见该文件 clean_old：不能 rmtree，批删会触发安全网关拦截）。
+# 注意 `build/` 只匹配目录本身，匹配不到这个前缀，必须单独写。
+build_stale_*/
 __pycache__/
 *.pyc
 

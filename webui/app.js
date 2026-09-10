@@ -52,6 +52,32 @@ const App = {
     }
   },
 
+  /* ---- Python → JS：浮窗提示（对应玻璃版的 _toast）---- */
+  toast(msg, ok = true){
+    const box = $('toasts');
+    if(!box) return;
+    const el = document.createElement('div');
+    el.className = 'toast' + (ok ? '' : ' err');
+    el.innerHTML = `<span class="ticon">${ok ? '✓' : '✗'}</span><span>${esc(msg)}</span>`;
+    box.appendChild(el);
+    /* 连点时不刷屏：只留最近 3 条 */
+    while(box.children.length > 3) box.removeChild(box.firstChild);
+    setTimeout(() => {
+      el.classList.add('out');
+      el.addEventListener('animationend', () => el.remove(), { once: true });
+      setTimeout(() => el.remove(), 600);   // 动画被打断时的兜底
+    }, 4000);
+  },
+
+  /* ---- 清空日志（抽屉与日志页是两份 DOM，必须一起清）---- */
+  clearLog(){
+    for(const el of [$('drawerLog'), $('logPage')]) el.innerHTML = '';
+    $('drawerHint').textContent = '暂无日志';
+    $('errDot').classList.remove('show');
+    errCount = 0;
+    $('logBadge').style.display = 'none';
+  },
+
   /* ---- Python → JS：忙碌态 ---- */
   setBusy(on, label){
     const btn = $('btnSwitch');
@@ -198,23 +224,28 @@ const App = {
   },
 
   /* ---- 账号表 ---- */
+  /* 状态胶囊文案，表格与详情弹窗共用一份，避免两处各写一套后漂移 */
+  statusInfo(a){
+    if(a.status === 'active') return { cls: 'on',   txt: '在用' };
+    if(a.status === 'ready')  return { cls: a.valid ? 'idle' : 'warn',
+                                       txt: a.valid ? '备用' : '备用·不可用' };
+    if(a.status === 'expired') return { cls: 'bad', txt: '过期' };
+    return { cls: 'bad', txt: '失效' };
+  },
+
   renderTable(accounts, active){
     const body = $('tblBody');
     $('tblEmpty').style.display = accounts.length ? 'none' : 'block';
     body.innerHTML = accounts.map((a, i) => {
-      const capCls = a.status === 'active' ? 'on'
-        : a.status === 'ready' ? (a.valid ? 'idle' : 'warn')
-        : 'bad';
-      const capTxt = a.status === 'active' ? '在用'
-        : a.status === 'ready' ? '备用'
-        : a.status === 'expired' ? '过期' : '失效';
+      const st = this.statusInfo(a);
       const pct = Math.max(0, Math.min(100, a.remain_pct));
       const low = pct < 25;
       const canSwitch = a.valid && a.status !== 'active';
-      return `<div class="tbl-row ${a.email === active ? 'sel' : ''}">
+      return `<div class="tbl-row ${a.email === active ? 'sel' : ''}"
+        oncontextmenu="return App.rowMenu(event, '${esc(a.email)}')">
         <span class="idx">${String(i+1).padStart(2,'0')}</span>
         <span class="mail">${esc(a.email)}</span>
-        <span><span class="capsule ${capCls}">${capTxt}</span></span>
+        <span><span class="capsule ${st.cls}">${st.txt}</span></span>
         <span class="minibar"><span class="bar"><i class="${low?'low':''}" style="width:${pct}%"></i></span><span class="t">${fmtHours(a.remain_s)}</span></span>
         <span class="created">${fmtDate(a.created_at)}</span>
         <span class="ops">
@@ -223,6 +254,84 @@ const App = {
         </span>
       </div>`;
     }).join('');
+  },
+
+  /* ---- 右键菜单（对应玻璃版的 _row_menu）---- */
+  rowMenu(e, email){
+    e.preventDefault();
+    if(this.state && this.state.switching) return false;   // 换号中不提供操作入口
+    this.showCtx(e.clientX, e.clientY, email);
+    return false;
+  },
+
+  showCtx(x, y, email){
+    const m = $('ctxMenu');
+    const a = (this.state && this.state.accounts || [])
+      .find(v => v.email === email) || {};
+    const canSwitch = a.valid && a.status !== 'active';
+    const canDelete = a.status !== 'active';
+    m.innerHTML =
+      `<div class="ctx-item" data-act="copy">复制邮箱</div>
+       <div class="ctx-item" data-act="info">查看详情</div>` +
+      (canSwitch ? `<div class="ctx-item" data-act="switch">切换到该账号</div>` : '') +
+      (canDelete ? `<div class="ctx-sep"></div>
+                    <div class="ctx-item danger" data-act="del">删除该账号</div>` : '');
+    m.querySelectorAll('.ctx-item').forEach(el => el.onclick = () => {
+      const act = el.dataset.act;
+      this.hideCtx();
+      if(act === 'copy') this.copyEmail(email);
+      else if(act === 'info') this.showInfo(email);
+      else if(act === 'switch') this.switchTo(email);
+      else if(act === 'del') this.askDelete(email);
+    });
+    /* 先显示再量尺寸，否则 getBoundingClientRect 拿不到宽高 */
+    m.classList.add('show');
+    const r = m.getBoundingClientRect();
+    m.style.left = Math.max(8, Math.min(x, window.innerWidth  - r.width  - 8)) + 'px';
+    m.style.top  = Math.max(8, Math.min(y, window.innerHeight - r.height - 8)) + 'px';
+  },
+
+  hideCtx(){ $('ctxMenu').classList.remove('show'); },
+
+  /* ---- 复制邮箱：剪贴板 API 在 WebView 里可能被拒，需要 execCommand 兜底 ---- */
+  copyEmail(email){
+    const done = () => this.toast(`已复制 ${email}`);
+    const fallback = () => {
+      try{
+        const ta = document.createElement('textarea');
+        ta.value = email;
+        ta.style.cssText = 'position:fixed;top:-1000px;opacity:0';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        ta.remove();
+        done();
+      }catch(_e){ this.toast('复制失败，请手动选择', false); }
+    };
+    if(navigator.clipboard && navigator.clipboard.writeText)
+      navigator.clipboard.writeText(email).then(done).catch(fallback);
+    else fallback();
+  },
+
+  /* ---- 账号详情（数据全来自 state，无需再问后端）---- */
+  showInfo(email){
+    const a = (this.state && this.state.accounts || [])
+      .find(v => v.email === email);
+    if(!a){ this.toast(`账号 ${email} 已不在库中`, false); return; }
+    const st = this.statusInfo(a);
+    const rows = [
+      ['邮箱',         a.email],
+      ['状态',         st.txt],
+      ['当前可用',     a.valid ? '是' : '否'],
+      ['注册于',       fmtDate(a.created_at)],
+      ['生命周期剩余', fmtHours(a.remain_s)],
+      ['剩余比例',     a.remain_pct + '%'],
+    ];
+    $('infoBody').innerHTML = rows.map(([k, v]) =>
+      `<div class="info-row"><span class="k">${k}</span><span class="v">${esc(v)}</span></div>`
+    ).join('');
+    $('infoCopy').onclick = () => this.copyEmail(a.email);
+    $('infoMask').classList.add('show');
   },
 
   /* ---- JS → Python：操作 ---- */
@@ -242,6 +351,24 @@ const App = {
   },
   setAuto(on){ call('set_auto', on); },
   setSysproxy(on){ call('set_sysproxy', on); },
+
+  /* 开机自启：写注册表，失败必须把开关回滚——否则界面在骗人 */
+  setAutostart(on){
+    const revert = () => { $('swAutostart').checked = !on; };
+    if(!hasBridge()){
+      revert();
+      this.toast('演示模式：未连接后端', false);
+      return;
+    }
+    window.pywebview.api.set_autostart(on).then(r => {
+      if(r && r.ok) this.toast(`开机自启已${on ? '开启' : '关闭'}`);
+      else { revert(); this.toast('开机自启设置失败（注册表访问受限）', false); }
+    }).catch(() => {
+      revert();
+      this.toast('开机自启设置失败', false);
+    });
+  },
+
   fillSettings(s){
     $('inMinTraffic').value = s.min_traffic_mb ?? '';
     $('inExpiryMin').value = s.expiry_threshold_minutes ?? '';
@@ -251,6 +378,7 @@ const App = {
     $('inFeishuHook').value = s.feishu_webhook || '';
     $('inFeishuApp').value = s.feishu_app || '';
     $('inDailyTime').value = s.daily_report_time || '';
+    $('swAutostart').checked = !!s.autostart;
   },
   saveSettings(){
     const payload = {
@@ -264,10 +392,11 @@ const App = {
       daily_report_time: $('inDailyTime').value.trim(),
     };
     if(!hasBridge()){ App.log('演示模式：设置未保存', 'warn'); return; }
+    /* 后端 save_settings 已写「设置已保存」日志，这里只弹回执，别重复记一遍 */
     window.pywebview.api.save_settings(payload).then(r => {
-      if(r && r.ok) App.log('设置已保存', 'ok');
-      else App.log('设置格式错误: ' + (r && r.error || '未知'), 'err');
-    });
+      if(r && r.ok) App.toast('设置已保存');
+      else App.toast('设置格式错误: ' + (r && r.error || '未知'), false);
+    }).catch(() => App.toast('设置保存失败', false));
   },
 };
 window.App = App;
@@ -287,6 +416,10 @@ $('modalOk').onclick = () => {
   if(modalCb) modalCb();
 };
 
+/* 账号详情弹窗 */
+$('infoClose').onclick = () => $('infoMask').classList.remove('show');
+$('infoMask').addEventListener('click', e => { if(e.target === $('infoMask')) $('infoMask').classList.remove('show'); });
+
 /* ================= 导航 / 抽屉 ================= */
 document.querySelectorAll('.nav-item').forEach(n => n.addEventListener('click', () => {
   document.querySelectorAll('.nav-item').forEach(x => x.classList.remove('active'));
@@ -303,15 +436,46 @@ $('drawerTab').addEventListener('click', () => {
   $('drawer').classList.toggle('open');
   if($('drawer').classList.contains('open')) $('errDot').classList.remove('show');
 });
+/* 「清空」在抽屉标题栏内，必须拦住冒泡，否则点它会把抽屉一起收起来 */
+$('btnClearLogDrawer').addEventListener('click', e => {
+  e.stopPropagation();
+  App.clearLog();
+});
 
 /* ================= 事件绑定 ================= */
 $('btnSwitch').onclick = () => App.switchNow();
 $('qRefresh').onclick = () => App.refresh();
 $('qTopup').onclick = () => App.topup();
 $('qClean').onclick = () => App.cleanInactive();
+$('btnClearLogPage').onclick = () => App.clearLog();
 $('swAuto').onchange = e => App.setAuto(e.target.checked);
 $('swProxy').onchange = e => App.setSysproxy(e.target.checked);
+$('swAutostart').onchange = e => App.setAutostart(e.target.checked);
 $('btnSaveSettings').onclick = () => App.saveSettings();
+
+/* ================= 快捷键（对应玻璃版的 F5 / Ctrl+T） ================= */
+document.addEventListener('keydown', e => {
+  /* 正在输入框里打字时不抢键：否则改设置时按 Ctrl+T 会莫名其妙换号 */
+  const tag = (e.target.tagName || '').toLowerCase();
+  if(tag === 'input' || tag === 'textarea' || e.target.isContentEditable) return;
+  if(e.key === 'F5'){                       // F5 默认会重载页面，必须拦掉
+    e.preventDefault();
+    App.refresh();
+  } else if(e.ctrlKey && (e.key === 't' || e.key === 'T')){
+    e.preventDefault();
+    App.switchNow();
+  } else if(e.key === 'Escape'){
+    App.hideCtx();
+    for(const id of ['modalMask', 'infoMask']) $(id).classList.remove('show');
+  }
+});
+
+/* 点空白处 / 滚动时收起右键菜单 */
+document.addEventListener('click', () => App.hideCtx());
+document.addEventListener('contextmenu', e => {
+  if(!e.target.closest('.tbl-row')) App.hideCtx();
+});
+window.addEventListener('blur', () => App.hideCtx());
 
 /* ===== 主题切换 ===== */
 const THEMES = [
