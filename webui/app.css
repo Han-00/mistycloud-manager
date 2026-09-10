@@ -10,6 +10,8 @@
 :root,
 :root[data-theme="aurora"]{           /* 极光蓝紫（默认） */
   --accent:#4d8dff;  --accent2:#38c6ff;
+  /* 热力图 4 档色板（少→多：蓝/黄/橙/红，不要绿），不随主题变 */
+  --heat-1:#60a5fa;  --heat-2:#facc15;  --heat-3:#fb923c;  --heat-4:#ef4444;
   --acc-glow:rgba(77,141,255,.4);  --acc-glow-hi:rgba(77,141,255,.6);
   --acc-soft:rgba(77,141,255,.12); --acc-soft-bd:rgba(77,141,255,.22);
   --acc-sel:rgba(77,141,255,.09);
@@ -256,6 +258,13 @@ body{
 .heat-cell{height:15px;border-radius:3.5px;background:var(--track-bg);transition:transform .1s}
 .heat-cell:hover{transform:scale(1.3)}
 .heat-legend{margin-top:10px;font-size:11px;color:var(--dim)}
+.heat-scale{display:inline-flex;align-items:center;gap:3px;margin-left:8px}
+.heat-scale i{width:11px;height:11px;border-radius:3px;display:inline-block;margin-left:8px}
+.heat-scale i:first-of-type{margin-left:0}
+.heat-scale i:nth-of-type(1){background:var(--heat-1)}
+.heat-scale i:nth-of-type(2){background:var(--heat-2)}
+.heat-scale i:nth-of-type(3){background:var(--heat-3)}
+.heat-scale i:nth-of-type(4){background:var(--heat-4)}
 
 .sec-title{font-size:12px;color:var(--muted);letter-spacing:2.5px;margin:24px 2px 12px;display:flex;align-items:center;gap:10px}
 .sec-title::after{content:"";flex:1;height:1px;background:linear-gradient(90deg,var(--border),transparent)}

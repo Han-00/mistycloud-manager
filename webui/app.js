@@ -250,30 +250,35 @@ const App = {
     $('eventPage').innerHTML = EV_EMPTY;
   },
 
-  /* ---- 流量热力图（7 天 × 24 小时，亮度 = log 强度） ---- */
+  /* ---- 流量热力图（7 天 × 24 小时，4 档离散色阶，固定档界） ---- */
   renderHeat(series){
     const grid = $('heatGrid');
     if(!grid) return;
     const map = {};
-    let max = 0;
-    (series || []).forEach(([k, v]) => { map[k] = v; if(v > max) max = v; });
+    (series || []).forEach(([k, v]) => { map[k] = v; });
     const p = x => String(x).padStart(2, '0');
     const now = new Date();
-    /* 从当前主题变量取 accent 色，换成 rgba 以承载强度 alpha */
-    const acc = getComputedStyle(document.documentElement)
-      .getPropertyValue('--accent').trim();
-    const m = acc.match(/^#([0-9a-f]{6})$/i);
-    const rgb = m
-      ? [parseInt(m[1].slice(0,2),16), parseInt(m[1].slice(2,4),16), parseInt(m[1].slice(4,6),16)]
-      : [77, 141, 255];
+    /* 4 档色板从 CSS 变量取（与图例同源），缺省用内置热力色带 */
+    const cs = getComputedStyle(document.documentElement);
+    const fallback = ['#60a5fa', '#facc15', '#fb923c', '#ef4444'];
+    const levels = fallback.map((fb, i) =>
+      cs.getPropertyValue(`--heat-${i + 1}`).trim() || fb);
+    /* 固定绝对档界（用户拍板）：<50 蓝 / 50-200 黄 / 200-500 橙 / 500+ 红 */
+    const MB = 1048576;
+    const cuts = [50 * MB, 200 * MB, 500 * MB];
+    const days = [];
+    for(let i = 0; i < 7; i++){
+      const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
+      days.push(`${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`);
+    }
     let html = '<div class="heat-row"><span class="hd"></span>';
     for(let h = 0; h < 24; h++)
       html += `<span class="ht">${h % 6 === 0 ? h : ''}</span>`;
     html += '</div>';
     let weekTotal = 0;
     for(let i = 0; i < 7; i++){
+      const day = days[i];
       const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
-      const day = `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
       const label = i === 0 ? '今天' : i === 1 ? '昨天'
         : `${p(d.getMonth()+1)}-${p(d.getDate())}`;
       html += `<div class="heat-row"><span class="hd">${label}</span>`;
@@ -281,9 +286,10 @@ const App = {
         const v = map[`${day}T${p(h)}`] || 0;
         weekTotal += v;
         let style = '';
-        if(v > 0 && max > 0){
-          const a = 0.18 + 0.82 * (Math.log10(1 + v) / Math.log10(1 + max));
-          style = ` style="background:rgba(${rgb[0]},${rgb[1]},${rgb[2]},${a.toFixed(2)})"`;
+        if(v > 0){
+          /* 越过几条档界就是第几档（1-4） */
+          const lv = 1 + cuts.filter(c => v >= c).length;
+          style = ` style="background:${levels[lv - 1]}"`;
         }
         const tip = `${label} ${p(h)}:00 · ${v > 0 ? fmtBytes(v) : '无消耗'}`;
         html += `<span class="heat-cell" title="${tip}"${style}></span>`;
@@ -569,7 +575,7 @@ function applyTheme(id, save){
   if(save !== false) localStorage.setItem('ui_theme', id);
   document.querySelectorAll('.swatch').forEach(el =>
     el.classList.toggle('on', el.dataset.id === id));
-  /* 热力图格子颜色是内联 rgba（取自 accent），换肤后需重绘 */
+  /* 热力图格子颜色取自 CSS 变量，换肤后重绘以保持一致 */
   if(window.App && App.state) App.renderHeat(App.state.traffic_heatmap);
 }
 function applyMode(mode, save){
@@ -619,14 +625,14 @@ const DEMO_EVENTS = [
 
 setTimeout(() => {
   if(hasBridge()) return;
-  /* 演示热力数据：白天高、凌晨低的作息曲线 + 大前天凌晨一次异常尖峰 */
+  /* 演示热力数据：白天高、凌晨低的作息曲线 + 两次尖峰（覆盖 蓝/黄/橙/红 全部 4 档） */
   const demoHeat = [];
   const p2 = x => String(x).padStart(2, '0');
   for(let i = 6; i >= 0; i--){
     const d = new Date(Date.now() - i * 86400000);
     for(let h = 0; h < 24; h++){
-      const base = Math.max(0, Math.sin((h - 6) / 24 * Math.PI * 2)) * 40;
-      const spike = (i === 3 && h === 3) ? 260 : 0;
+      const base = Math.max(0, Math.sin((h - 6) / 24 * Math.PI * 2)) * 60;
+      const spike = (i === 3 && h === 3) ? 420 : (i === 1 && h === 21) ? 1100 : 0;
       const v = (base + spike) * (0.5 + ((i * 7 + h * 13) % 10) / 10) * 1048576;
       if(v > 2 * 1048576)
         demoHeat.push([`${d.getFullYear()}-${p2(d.getMonth()+1)}-${p2(d.getDate())}T${p2(h)}`, Math.round(v)]);
