@@ -171,4 +171,80 @@ avg = s6.avg_daily_bytes(3)
 assert abs(avg - 3000 / (1 + frac)) / (3000 / (1 + frac)) < 0.01, avg
 print("[13] avg_daily_bytes 折算 ✓")
 
+# ---- [14] 链路可用率：探测计数 ----
+sa = stats.Stats(os.path.join(_TMP, "stats_avail.json"))
+sa.record_probe(True)
+sa.record_probe(True)
+sa.record_probe(False)
+av = sa.availability(24)
+assert av["ok"] == 2 and av["total"] == 3, av
+assert av["pct"] == round(2 / 3 * 100, 1) == 66.7, av
+print("[14] 可用率：分母是探测次数（2/3 → 66.7%）✓")
+
+# ---- [15] 无数据时 pct 必须是 None，不能是 0 ----
+# 「没测过」和「全挂」是两件事：混成 0% 会让新装的用户一开机就看到
+# 一个红色的「0% 可用率」，据此误判链路坏了。
+empty = stats.Stats(os.path.join(_TMP, "stats_empty.json"))
+assert empty.availability(24) == {"pct": None, "ok": 0, "total": 0}, empty.availability(24)
+assert empty.snapshot().get("probe") is None or empty.snapshot()["probe"] == {}
+print("[15] 无探测数据 → pct=None（区别于 0%）✓")
+
+# ---- [16] 窗口边界：25 小时前的桶不计入，当前桶计入 ----
+now = _time.time()
+hk_now = _time.strftime("%Y-%m-%dT%H", _time.localtime(now))
+hk_old = _time.strftime("%Y-%m-%dT%H", _time.localtime(now - 25 * 3600))
+sa.data["probe"] = {hk_now: {"ok": 1, "n": 2}, hk_old: {"ok": 0, "n": 10}}
+av = sa.availability(24)
+assert av == {"pct": 50.0, "ok": 1, "total": 2}, av
+print("[16] 24h 窗口外的桶不计入（旧桶的 0/10 未拖低可用率）✓")
+
+# ---- [17] 时钟回拨产生的「未来桶」不计入 ----
+hk_future = _time.strftime("%Y-%m-%dT%H", _time.localtime(now + 3 * 3600))
+sa.data["probe"] = {hk_now: {"ok": 1, "n": 1}, hk_future: {"ok": 0, "n": 50}}
+av = sa.availability(24)
+assert av == {"pct": 100.0, "ok": 1, "total": 1}, av
+print("[17] 未来桶（系统时钟回拨）不计入 ✓")
+
+# ---- [18] 脏数据容错：桶不是 dict / 键不是合法时间 → 跳过而非抛 ----
+sa.data["probe"] = {
+    hk_now: {"ok": 1, "n": 4},
+    "not-a-time": {"ok": 0, "n": 9},
+    "2026-13-45T99": {"ok": 0, "n": 9},
+    hk_old: "garbage",
+}
+av = sa.availability(24)
+assert av == {"pct": 25.0, "ok": 1, "total": 4}, av
+print("[18] 可用率对脏数据健壮（坏键/非 dict 桶均跳过）✓")
+
+# ---- [19] probe 随小时桶一起被修剪 ----
+# 可用率与流量共用一个 8 天保留期，否则 probe 会无上限增长。
+s7 = stats.Stats(os.path.join(_TMP, "stats_prune_probe.json"))
+hk_gone = _time.strftime("%Y-%m-%dT%H",
+                         _time.localtime(_time.time() - 30 * 86400))
+s7.data["probe"] = {hk_gone: {"ok": 0, "n": 5}}
+s7.record_probe(True)          # 触发一次修剪
+assert hk_gone not in (s7.snapshot().get("probe") or {}), \
+    f"30 天前的 probe 桶未被修剪: {s7.snapshot().get('probe')}"
+print("[19] 过期 probe 桶随修剪一并清除 ✓")
+
+# ---- [20] 多实例隔离（回归：_DEFAULT 浅拷贝导致嵌套字典跨实例共享）----
+# 曾经的写法 `self.data = dict(_DEFAULT)` 只复制了顶层：hourly / probe 这几个
+# {} 是所有实例共享的同一个对象，B 往里面写一桶 A 立刻"看见"，保存时还会把
+# 对方数据写进自己的文件。生产只有单例所以一直没露头，是 [15] 顺带撞出来的。
+ia = stats.Stats(os.path.join(_TMP, "stats_iso_a.json"))
+ib = stats.Stats(os.path.join(_TMP, "stats_iso_b.json"))
+ia.record_probe(True)
+ia.add_traffic("a@x.com", 100)
+ib.record_probe(False)
+ib.add_traffic("b@x.com", 100)
+assert ib.availability(24)["total"] == 1, f"实例间 probe 串了: {ib.availability(24)}"
+assert sum(ib.snapshot()["hourly"].values()) == 0 or \
+    len(ib.snapshot()["hourly"]) <= 1, f"实例间 hourly 串了: {ib.snapshot()['hourly']}"
+# 反向再确认一次：改 B 不应影响 A
+a_before = dict(ia.snapshot()["hourly"])
+ib.data["hourly"]["2099-01-01T00"] = 99999
+assert ia.snapshot()["hourly"] == a_before, "B 改 hourly 污染了 A"
+assert "2099-01-01T00" not in ia.snapshot()["hourly"]
+print("[20] 多实例隔离：probe / hourly 不再跨实例共享 ✓")
+
 print("\n== 日报统计测试通过 ==")

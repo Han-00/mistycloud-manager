@@ -19,6 +19,7 @@ function fmtDate(ts){
   return `${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 const RING_LEN = 326.7;
+const EV_EMPTY = '<div class="ev-empty">还没有事件记录。换号、注册、链路回退与自愈都会记在这里。</div>';
 
 /* ================= 桥接 ================= */
 const hasBridge = () => !!(window.pywebview && window.pywebview.api);
@@ -30,6 +31,7 @@ const call = (name, ...args) => hasBridge()
 let errCount = 0;
 const App = {
   state: null,
+  _logTab: 'run',        /* 日志页当前标签：run(运行日志) / events(事件) */
 
   /* ---- Python → JS：日志 ---- */
   log(msg, tag){
@@ -133,6 +135,9 @@ const App = {
     /* 流量热力图 */
     this.renderHeat(st.traffic_heatmap);
 
+    /* 链路可用率 */
+    this.renderUptime(st.link_uptime);
+
     /* 有效期（秒级跳变由本地 tick 接管） */
     this._expireTs = st.expire_ts || 0;
     this._expiryThreshold = st.expiry_threshold_s || 1800;
@@ -176,6 +181,73 @@ const App = {
     const p = x => String(x).padStart(2,'0');
     $('ttlSub').textContent = `到期 ${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
     $('ttlWarn').style.display = warn ? 'flex' : 'none';
+  },
+
+  /* ---- 链路可用率（近 24h） ---- */
+  renderUptime(u){
+    const pctEl = $('uptimePct'), barEl = $('uptimeBar'), noteEl = $('uptimeNote');
+    if(!pctEl) return;
+    const pct = u ? u.pct : null;
+    if(pct == null){
+      /* 「没测过」必须和「全挂」分开显示：程序刚装上时是没数据，
+         直接甩个 0% 会让人以为链路是坏的。 */
+      pctEl.textContent = '数据积累中';
+      pctEl.className = 'uptime-pct na';
+      barEl.style.width = '0';
+      barEl.className = '';
+      noteEl.textContent = '';
+      return;
+    }
+    pctEl.innerHTML = Math.round(pct) + '<small>%</small>';
+    const cls = pct >= 95 ? '' : pct >= 80 ? 'warn' : 'bad';
+    pctEl.className = ('uptime-pct ' + cls).trim();
+    barEl.style.width = pct + '%';
+    barEl.className = cls;
+    noteEl.textContent = `${u.ok}/${u.total} 次探测`;
+  },
+
+  /* ---- 事件流（换号 / 注册 / 回退 / 自愈的留痕） ---- */
+  switchLogTab(tab){
+    this._logTab = tab;
+    for(const b of document.querySelectorAll('#logTabs .log-tab'))
+      b.classList.toggle('active', b.dataset.tab === tab);
+    $('logPage').style.display   = tab === 'run'    ? '' : 'none';
+    $('eventPage').style.display = tab === 'events' ? '' : 'none';
+    if(tab === 'events') this.loadEvents();
+  },
+
+  loadEvents(){
+    if(!hasBridge()){ this.renderEvents(DEMO_EVENTS); return; }
+    call('get_events', 200).then(list => this.renderEvents(list || []));
+  },
+
+  renderEvents(list){
+    const box = $('eventPage');
+    if(!box) return;
+    if(!list.length){ box.innerHTML = EV_EMPTY; return; }
+    const KIND = {switch:'换号', register:'注册', restore:'回退', heal:'自愈', abort:'中止'};
+    box.innerHTML = list.map(e => {
+      const kind = e.kind || '?';
+      const label = KIND[kind] || kind;
+      const dt = String(e.time || '');
+      const parts = [];
+      if(e.email) parts.push(`<span class="ev-mail">${esc(e.email)}</span>`);
+      if(e.reason) parts.push(`<span class="ev-meta">${esc(e.reason)}</span>`);
+      if(e.ok && e.proxy_ip) parts.push(`<span class="ev-meta">→ ${esc(e.proxy_ip)}</span>`);
+      if(e.duration) parts.push(`<span class="ev-meta">${esc(e.duration)}s</span>`);
+      if(!e.ok && e.error) parts.push(`<span class="ev-fail">${esc(e.error)}</span>`);
+      return `<div class="ev">
+        <span class="ev-time">${esc(dt.slice(5))}</span>
+        <span class="ev-badge k-${esc(kind)}">${esc(label)}</span>
+        <span class="ev-badge" style="color:${e.ok ? 'var(--con-text)' : '#ff8b84'}">${e.ok ? '成功' : '失败'}</span>
+        ${parts.join(' ')}
+      </div>`;
+    }).join('');
+  },
+
+  clearEvents(){
+    if(hasBridge()) call('clear_events');
+    $('eventPage').innerHTML = EV_EMPTY;
   },
 
   /* ---- 流量热力图（7 天 × 24 小时，亮度 = log 强度） ---- */
@@ -430,6 +502,8 @@ document.querySelectorAll('.nav-item').forEach(n => n.addEventListener('click', 
     errCount = 0;
     $('logBadge').style.display = 'none';
     $('errDot').classList.remove('show');
+    /* 事件是历史数据，不会像日志那样被推送更新，进来时重新拉一次 */
+    if(App._logTab === 'events') App.loadEvents();
   }
 }));
 $('drawerTab').addEventListener('click', () => {
@@ -447,7 +521,11 @@ $('btnSwitch').onclick = () => App.switchNow();
 $('qRefresh').onclick = () => App.refresh();
 $('qTopup').onclick = () => App.topup();
 $('qClean').onclick = () => App.cleanInactive();
-$('btnClearLogPage').onclick = () => App.clearLog();
+/* 「清空」作用于当前标签：事件标签下清事件流，否则清运行日志 */
+$('btnClearLogPage').onclick = () =>
+  App._logTab === 'events' ? App.clearEvents() : App.clearLog();
+for(const b of document.querySelectorAll('#logTabs .log-tab'))
+  b.onclick = () => App.switchLogTab(b.dataset.tab);
 $('swAuto').onchange = e => App.setAuto(e.target.checked);
 $('swProxy').onchange = e => App.setSysproxy(e.target.checked);
 $('swAutostart').onchange = e => App.setAutostart(e.target.checked);
@@ -529,6 +607,16 @@ window.addEventListener('pywebviewready', () => {
 });
 
 /* 浏览器预览回退（无 Python 桥时的演示数据） */
+/* 演示事件流：新的在前，与 events.recent() 的顺序一致 */
+const DEMO_EVENTS = [
+  {time:'2026-09-10 08:41:07', kind:'switch',   ok:true,  email:'dp0024yd83@emalupe.com', reason:'流量不足', proxy_ip:'103.170.233.101', duration:9.4},
+  {time:'2026-09-10 08:22:51', kind:'register', ok:true,  email:'8f9zlo3bo0@emalupe.com'},
+  {time:'2026-09-10 07:58:33', kind:'switch',   ok:false, email:'dead00beef@emalupe.com', reason:'流量不足', error:'登录失败（账号已失效）', duration:4.1},
+  {time:'2026-09-10 07:58:29', kind:'restore',  ok:true,  reason:'换号失败后回退原节点'},
+  {time:'2026-09-10 06:13:02', kind:'heal',     ok:true,  reason:'连续探测失败后重启引擎恢复', proxy_ip:'103.170.233.101'},
+  {time:'2026-09-09 23:47:18', kind:'abort',    ok:false, reason:'流量/有效期不足', error:'备用账号不足（请检查账号库）'},
+];
+
 setTimeout(() => {
   if(hasBridge()) return;
   /* 演示热力数据：白天高、凌晨低的作息曲线 + 大前天凌晨一次异常尖峰 */
@@ -549,6 +637,7 @@ setTimeout(() => {
     link: {ok: true, ip: '103.170.233.101', ts: '08:53:12'},
     traffic: {total: 307.2*1048576, used: 205.4*1048576, remain: 101.8*1048576, low: false},
     traffic_heatmap: demoHeat, fuel_days: 3.2,
+    link_uptime: {pct: 97.2, ok: 315, total: 324},
     expire_ts: Date.now()/1000 + 14.8*3600, expiry_threshold_s: 1800,
     auto_on: true, sysproxy_on: true, valid_count: 3, switching: false,
     accounts: [

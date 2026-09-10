@@ -115,6 +115,16 @@
           <div class="heat-legend">行 = 日期（新在上）· 列 = 小时（0-23）· 格子越亮烧得越多，悬浮看详情</div>
         </div>
 
+        <!-- 链路可用率 · 近 24h -->
+        <div class="card uptime-card">
+          <div class="label">链路可用率 · 近 24h<span class="uptime-note" id="uptimeNote"></span></div>
+          <div class="uptime-body">
+            <div class="uptime-pct" id="uptimePct">–</div>
+            <div class="uptime-track"><i id="uptimeBar"></i></div>
+          </div>
+          <div class="heat-legend">按探测次数统计（监控每轮探一次）· 程序未运行的时段不计入分母</div>
+        </div>
+
         <div class="sec-title">快捷操作</div>
         <div class="quick">
           <button class="qbtn" id="qRefresh">⟳ 刷新状态</button>
@@ -135,10 +145,14 @@
       <!-- ===== 日志页 ===== -->
       <section class="page" id="page-logs">
         <div class="log-head">
-          <span class="sec-title" style="margin:0">运行日志</span>
+          <div class="log-tabs" id="logTabs">
+            <button class="log-tab active" data-tab="run">运行日志</button>
+            <button class="log-tab" data-tab="events">事件</button>
+          </div>
           <button class="qbtn sm" id="btnClearLogPage">清空</button>
         </div>
         <div class="logpage" id="logPage"></div>
+        <div class="logpage" id="eventPage" style="display:none"></div>
       </section>
 
       <!-- ===== 设置页 ===== -->

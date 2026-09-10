@@ -12,6 +12,7 @@ import threading
 import time
 
 from cloud_api import CloudAccount
+import events
 
 
 class Monitor:
@@ -74,6 +75,13 @@ class Monitor:
             return
         ok, ip = self._probe()
         self.last_link = {"ok": ok, "ip": ip, "ts": time.strftime("%H:%M:%S")}
+        # 可用率的分子分母：**只记真的探测过的轮次**。本方法开头那两个 return
+        # （引擎没跑 / 正在换号）根本没探测，记进去等于把「没检查」算成「不可用」。
+        try:
+            import stats
+            stats.record_probe(ok)
+        except Exception:
+            pass
         if ok:
             self._fail_streak = 0
             return
@@ -94,6 +102,8 @@ class Monitor:
                         self.log(f"代理已用当前节点恢复（出口 {ip2}）")
                         self.last_link = {"ok": True, "ip": ip2,
                                           "ts": time.strftime("%H:%M:%S")}
+                        events.record("heal", True, reason="连续探测失败后重启引擎恢复",
+                                      proxy_ip=ip2)
                         return
             except Exception as e:
                 self.log(f"节点恢复异常: {e}")

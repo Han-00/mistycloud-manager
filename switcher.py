@@ -17,6 +17,7 @@ import time
 from account_pool import AccountPool
 from cloud_api import CloudAccount
 from config import Config
+import events
 from notify import notify_switch
 from v2ray_engine import V2RayEngine
 
@@ -72,11 +73,14 @@ class Switcher:
 
     # ---- 对外主入口 ----
     def switch_to_email(self, email: str, notify_fail: bool = True,
-                        _internal: bool = False) -> SwitchResult:
+                        _internal: bool = False, reason: str = "") -> SwitchResult:
         """切换到指定账号。notify_fail=False 时失败不推送飞书（自动换号逐候选尝试时用）。
 
         并发守卫在本方法内生效（手动切换与自动换号互斥；v1.0.7 教训：
         并发换号会互踩引擎进程）。auto_switch 内部调用走 _internal 通道。
+
+        reason 是「为什么换」——手动触发 / 流量不足 / 代理链路异常…
+        它只用于事件流留痕，不参与任何判断。
         """
         result = SwitchResult()
         result.email = email
@@ -102,6 +106,11 @@ class Switcher:
             record_switch(result.ok)
         except Exception:
             pass
+        # 事件流留痕：与日报计数同步。早退的「已有切换进行中」同样不记——
+        # 那不是一次真实尝试，记进去只会污染成功率。
+        events.record("switch", result.ok, email=email, reason=reason,
+                      error=result.error, proxy_ip=result.proxy_ip,
+                      direct_ip=result.direct_ip, duration=result.duration)
         # 通知统一在出口处理：成功必通知；失败仅在调用方要求时通知
         # （自动换号逐候选静默，由 auto_switch 汇总后通知一次）
         if result.ok:
@@ -201,10 +210,15 @@ class Switcher:
             self.engine.write_config(prev_node)
             if self.engine.start() and self.engine.wait_port(timeout=15):
                 self.log("已恢复原节点代理")
+                events.record("restore", True, reason="换号失败后回退原节点")
             else:
                 self.log("原节点恢复失败（下次换号或监控会重试）")
+                events.record("restore", False, reason="换号失败后回退原节点",
+                              error="原节点恢复失败")
         except Exception as e:
             self.log(f"恢复原节点异常: {e}")
+            events.record("restore", False, reason="换号失败后回退原节点",
+                          error=f"恢复异常: {e}")
 
     # ---- 自动换号：失败换下一个 ----
     def auto_switch(self, reason: str = "") -> SwitchResult:
@@ -218,7 +232,8 @@ class Switcher:
         try:
             current = self.pool.get_active()
             exclude = current["email"] if current else ""
-            self.log(f"触发自动换号: {reason or '流量/有效期不足'}")
+            why = reason or "流量/有效期不足"
+            self.log(f"触发自动换号: {why}")
 
             tried: list[str] = []
             last: SwitchResult = r
@@ -234,6 +249,9 @@ class Switcher:
                         else:
                             r.error = "备用账号不足（请检查账号库）"
                         self.log(f"自动换号中止: {r.error}")
+                        # 一个候选都没试过就中止，没有任何 switch 事件留痕——
+                        # 而这恰恰是「自动换号为什么不工作」最常见的原因
+                        events.record("abort", False, reason=why, error=r.error)
                     else:
                         self.log("无更多候选账号，结束本轮换号")
                     return last if tried else r
@@ -243,7 +261,8 @@ class Switcher:
                              f"{cooldown_remain(acc['email'])}s），跳过")
                     continue
                 self.log(f"尝试候选: {acc['email']}")
-                last = self.switch_to_email(acc["email"], notify_fail=False, _internal=True)
+                last = self.switch_to_email(acc["email"], notify_fail=False,
+                                            _internal=True, reason=why)
                 if last.ok:
                     return last
                 self.log(f"候选失败: {acc['email']} — {last.error}，换下一个")

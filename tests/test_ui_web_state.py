@@ -85,7 +85,8 @@ def main():
     ui, pool = build([mk("a@x.com", "active", now)])
     st = ui.build_state()
     for key in ("active", "engine_running", "port", "link", "traffic",
-                "traffic_heatmap", "fuel_days", "expire_ts", "expiry_threshold_s",
+                "traffic_heatmap", "fuel_days", "link_uptime", "expire_ts",
+                "expiry_threshold_s",
                 "auto_on", "sysproxy_on", "valid_count", "switching", "accounts"):
         assert key in st, f"状态快照缺字段: {key}"
     assert st["active"] == "a@x.com", st["active"]
@@ -207,6 +208,58 @@ def main():
     finally:
         autostart.set_enabled = _orig_set
     print("[11] set_autostart 成功/受限两条路径都不崩、失败有明确返回 ✓")
+
+    # ---- [12] link_uptime 透传；stats 挂掉时退化为「无数据」而不是崩掉整个快照 ----
+    # 可用率是仪表盘上的一个数字，但它在 build_state 内部。若 stats 抛异常
+    # 而这里没兜住，整轮状态推送都会中断——界面停止更新，比少一个数字严重得多。
+    ui, pool = build([mk("a@x.com", "active", now)])
+    _orig_avail = stats.availability
+    try:
+        stats.availability = lambda hours=24: {"pct": 87.5, "ok": 21, "total": 24}
+        assert ui.build_state()["link_uptime"] == {"pct": 87.5, "ok": 21, "total": 24}
+
+        def _boom(hours=24):
+            raise RuntimeError("stats 文件损坏")
+        stats.availability = _boom
+        st = ui.build_state()                       # 不得抛
+        assert st["link_uptime"] == {"pct": None, "ok": 0, "total": 0}, \
+            f"stats 异常时应退化为无数据（pct=None 而非 0%）: {st['link_uptime']}"
+        assert st["accounts"], "stats 异常不该影响账号列表"
+    finally:
+        stats.availability = _orig_avail
+    print("[12] link_uptime 透传；stats 异常时退化为 pct=None 且快照仍完整 ✓")
+
+    # ---- [13] get_events：透传 events.recent，异常时不抛 ----
+    ui, pool = build([mk("a@x.com", "active", now)])
+    import events  # noqa: E402
+    _orig_recent = events.recent
+    _orig_clear = events.clear
+    seen = []
+    try:
+        events.recent = lambda limit=100: seen.append(limit) or [
+            {"kind": "switch", "ok": True, "time": "2026-09-10 12:00:00"}]
+        out = ui.get_events(30)
+        assert seen == [30], f"limit 应原样透传: {seen}"
+        assert out and out[0]["kind"] == "switch"
+
+        def _boom_recent(limit=100):
+            raise OSError("读不了")
+        events.recent = _boom_recent
+        assert ui.get_events() == [], "读事件失败应返回空列表而非抛"
+
+        called = []
+        events.clear = lambda: called.append(1)
+        ui.clear_events()
+        assert called == [1], "clear_events 应转发到 events.clear"
+
+        def _boom_clear():
+            raise OSError("写不了")
+        events.clear = _boom_clear
+        ui.clear_events()          # 不得抛
+    finally:
+        events.recent = _orig_recent
+        events.clear = _orig_clear
+    print("[13] get_events 透传 limit；读写事件异常均不抛 ✓")
 
     print("\n== Web 前端状态与删除保护测试通过 ==")
 

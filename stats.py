@@ -20,6 +20,7 @@ _DEFAULT = {
     "traffic_used": 0,         # 当日消耗流量（字节）
     "traffic_base": {},        # {email: 最近观测的服务端累计已用}，跨天保留
     "hourly": {},              # {"YYYY-MM-DDTHH": 该小时消耗字节}，保留近 8 天
+    "probe": {},               # {"YYYY-MM-DDTHH": {"ok": n, "n": n}}，同保留期
     "last_report_date": "",    # 最近成功推送日报的日期
     "pending_report": None,    # 待推送的上一日全天计数
 }
@@ -42,8 +43,14 @@ class Stats:
     def __init__(self, path: str | None = None):
         self.path = path or stats_path()
         self._lock = threading.Lock()
-        self.data: dict = dict(_DEFAULT)
-        self.data["traffic_base"] = {}
+        # ⚠ 必须逐个复制嵌套字典，不能 dict(_DEFAULT) 了事——那是**浅拷贝**，
+        # traffic_base / hourly / probe 这几个 {} 会变成所有实例共享的同一对象：
+        # 第二个实例往 hourly 里写一桶，第一个实例立刻"看见"，且保存时会把
+        # 对方的数据写进自己的文件。生产只有一个单例所以从不露头，但
+        # 「再开一个 Stats 读点东西」是很自然的写法，一旦有人这么写就会串数据。
+        # （traffic_base 曾经被单独补过一句 = {}，就是踩了这个坑只修了一个键。）
+        self.data: dict = {k: (dict(v) if isinstance(v, dict) else v)
+                           for k, v in _DEFAULT.items()}
         self._load()
 
     def _load(self):
@@ -70,15 +77,18 @@ class Stats:
         """当前小时桶键（测试可注入替代，与 _today 同理）。"""
         return time.strftime("%Y-%m-%dT%H")
 
-    def _prune_hourly_locked(self):
-        """修剪 8 天前的小时桶（键为定长可排序字符串，按字典序比较）。"""
+    def _prune_buckets_locked(self):
+        """修剪 8 天前的小时桶（键为定长可排序字符串，按字典序比较）。
+
+        hourly（流量）与 probe（可用率）保留期一致，一起剪。
+        """
         cutoff = time.strftime("%Y-%m-%dT%H",
                                time.localtime(time.time()
                                               - _HOURLY_KEEP_DAYS * 86400))
-        hourly = self.data.get("hourly")
-        if isinstance(hourly, dict):
-            self.data["hourly"] = {k: v for k, v in hourly.items()
-                                   if k >= cutoff}
+        for name in ("hourly", "probe"):
+            d = self.data.get(name)
+            if isinstance(d, dict):
+                self.data[name] = {k: v for k, v in d.items() if k >= cutoff}
 
     def _rollover_locked(self):
         """日期翻转：旧日计数固化进 pending（已有未推送的则保留旧的），
@@ -145,10 +155,66 @@ class Stats:
                         hk = self._hour_key()
                         hourly[hk] = int(hourly.get(hk) or 0) + delta
                     base[email] = used
-                self._prune_hourly_locked()
+                self._prune_buckets_locked()
                 self._save_locked()
             except Exception:
                 pass
+
+    def record_probe(self, ok: bool):
+        """记一次链路探测结果（可用率的分母）。
+
+        只应由 monitor 在**真的探测过**之后调用——因换号进行中、引擎未启动
+        而跳过探测的轮次不该计入，否则等于把「没检查」算成「不可用」，
+        可用率会凭空下跌。
+        """
+        with self._lock:
+            try:
+                self._rollover_locked()
+                probe = self.data.setdefault("probe", {})
+                bucket = probe.setdefault(self._hour_key(), {"ok": 0, "n": 0})
+                if not isinstance(bucket, dict):     # 脏数据兜底
+                    bucket = {"ok": 0, "n": 0}
+                    probe[self._hour_key()] = bucket
+                bucket["n"] = int(bucket.get("n") or 0) + 1
+                if ok:
+                    bucket["ok"] = int(bucket.get("ok") or 0) + 1
+                self._prune_buckets_locked()
+                self._save_locked()
+            except Exception:
+                pass
+
+    def availability(self, hours: int = 24) -> dict:
+        """近 N 小时链路可用率。
+
+        分母是**探测次数**，不是小时数：监控没在跑的时段不该被当成「不可用」，
+        否则关一晚上程序，第二天可用率就凭空掉下来。
+
+        返回 {"pct": float|None, "ok": n, "total": n}。pct 为 None 表示无数据，
+        **区别于 0%**——「没测过」和「全挂」是两件事，界面上必须分开显示。
+        """
+        now = time.time()
+        with self._lock:
+            probe = dict(self.data.get("probe") or {})
+        ok = total = 0
+        for k, v in probe.items():
+            try:
+                ts = time.mktime(time.strptime(k, "%Y-%m-%dT%H"))
+            except (ValueError, OverflowError, TypeError):
+                continue
+            if ts < now - hours * 3600:
+                continue
+            if ts > now + 3600:      # 系统时钟回拨产生的「未来桶」，不参与统计
+                continue
+            if not isinstance(v, dict):
+                continue
+            total += int(v.get("n") or 0)
+            ok += int(v.get("ok") or 0)
+        total = max(total, 0)
+        return {
+            "pct": round(ok / total * 100, 1) if total else None,
+            "ok": ok,
+            "total": total,
+        }
 
     def mark_reported(self):
         """日报推送成功后调用：记录日期、清待推送。"""
@@ -176,6 +242,7 @@ class Stats:
             d = dict(self.data)
             d["traffic_base"] = dict(d.get("traffic_base") or {})
             d["hourly"] = dict(d.get("hourly") or {})
+            d["probe"] = dict(d.get("probe") or {})
             return d
 
     # ---- 热力图 / 续航预测（供 UI）----
@@ -271,3 +338,17 @@ def avg_daily_bytes(days: int = 3):
         return get().avg_daily_bytes(days)
     except Exception:
         return None
+
+
+def record_probe(ok: bool):
+    try:
+        get().record_probe(ok)
+    except Exception:
+        pass
+
+
+def availability(hours: int = 24) -> dict:
+    try:
+        return get().availability(hours)
+    except Exception:
+        return {"pct": None, "ok": 0, "total": 0}

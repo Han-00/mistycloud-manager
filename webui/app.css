@@ -470,3 +470,44 @@ body{
   font-size:11px;font-family:inherit;cursor:pointer;transition:.15s;
 }
 .log-clear:hover{border-color:rgba(255,255,255,.24);color:var(--con-text);background:var(--con-hi)}
+
+/* ========== 日志页 Tab（运行日志 / 事件） ========== */
+.log-tabs{display:flex;gap:4px;flex:1}
+.log-tab{
+  padding:5px 14px;border-radius:9px;border:1px solid transparent;
+  background:transparent;color:var(--muted);
+  font-size:12.5px;font-family:inherit;cursor:pointer;transition:.15s;
+}
+.log-tab:hover{color:var(--text);background:var(--panel-2)}
+.log-tab.active{background:var(--acc-soft);color:var(--accent);border-color:var(--border-hi)}
+
+/* ========== 事件时间线 ==========
+   同为「终端表面」：固定深底浅字，不随深浅模式切换（见 .logpage 处的说明）。 */
+.ev{display:flex;align-items:baseline;gap:10px;padding:6px 0;border-bottom:1px solid var(--con-line)}
+.ev:last-child{border-bottom:none}
+.ev-time{color:var(--con-muted);flex:none;font-size:11.5px;letter-spacing:.2px}
+.ev-badge{flex:none;padding:1px 7px;border-radius:5px;font-size:10.5px;border:1px solid currentColor}
+.ev-badge.k-switch{color:#7aa2ff}
+.ev-badge.k-register{color:#c39bff}
+.ev-badge.k-restore{color:#ffb454}
+.ev-badge.k-heal{color:#4fd18b}
+.ev-badge.k-abort{color:#ff5f57}
+.ev-mail{color:#9fd3ff;word-break:break-all}
+.ev-fail{color:#ff8b84}
+.ev-meta{color:var(--con-muted);font-size:11.5px}
+.ev-empty{color:var(--con-muted)}
+
+/* ========== 链路可用率 ========== */
+.uptime-card{margin-bottom:20px}
+.uptime-card .label{display:flex;align-items:baseline;gap:8px}
+.uptime-note{margin-left:auto;color:var(--dim);letter-spacing:0;font-family:var(--mono);font-size:11px}
+.uptime-body{display:flex;align-items:center;gap:16px;margin-top:4px}
+.uptime-pct{font-size:30px;font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:-.5px;color:var(--ok)}
+.uptime-pct.warn{color:var(--warn)}
+.uptime-pct.bad{color:var(--err)}
+.uptime-pct.na{color:var(--muted);font-size:15px;font-weight:500}
+.uptime-pct small{font-size:14px;font-weight:600;margin-left:1px}
+.uptime-track{flex:1;height:8px;border-radius:99px;background:var(--panel-2);border:1px solid var(--border);overflow:hidden}
+.uptime-track i{display:block;height:100%;width:0;border-radius:99px;background:var(--ok);transition:width .5s ease}
+.uptime-track i.warn{background:var(--warn)}
+.uptime-track i.bad{background:var(--err)}

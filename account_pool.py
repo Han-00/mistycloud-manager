@@ -11,6 +11,7 @@ import string
 import time
 import threading
 
+import events
 from config import Config
 from paths import base_dir
 from cloud_api import CloudAccount, HttpError
@@ -239,13 +240,19 @@ class AccountPool:
         """注册一个全新账号。返回账号 dict 或 None。
 
         链路：mail.tm 建邮箱 → 发验证码 → 轮询收码 → 注册 MistyCloud → 登录。
+
+        失败原因用局部变量 `err` 兜到 finally 统一写事件流：失败路径有 5 条，
+        逐个埋点容易漏掉日后新增的分支。
         """
         from mail_api import MailBox
+        err = ""
+        acc = None
         try:
             # 1. 临时邮箱
             box = MailBox(password=self._rand_pw())
             if not box.create():
-                if log: log("注册失败: 无法创建临时邮箱")
+                err = "无法创建临时邮箱"
+                if log: log(f"注册失败: {err}")
                 return None
             if log: log(f"临时邮箱: {box.address}")
 
@@ -256,17 +263,20 @@ class AccountPool:
                                       json_body=False)
                 # ret=1 表示成功（"验证码发送成功"）；ret=0 表示失败
                 if isinstance(send_resp, dict) and send_resp.get("ret") == 0:
-                    if log: log(f"发送验证码失败: {send_resp.get('msg', '')}")
+                    err = f"发送验证码失败: {send_resp.get('msg', '')}"
+                    if log: log(err)
                     return None
             except HttpError as e:
-                if log: log(f"发送验证码异常: HTTP {e.status}")
+                err = f"发送验证码异常: HTTP {e.status}"
+                if log: log(err)
                 return None
             if log: log("验证码已发送，等待邮件...")
 
             # 3. 轮询验证码
             code = box.fetch_code(timeout=120)
             if not code:
-                if log: log("注册失败: 未收到验证码")
+                err = "未收到验证码"
+                if log: log(f"注册失败: {err}")
                 return None
             if log: log(f"收到验证码: {code}")
 
@@ -296,11 +306,18 @@ class AccountPool:
                 return acc
             # 可能已注册或需要其他字段
             msg = reg.get("msg", "") if isinstance(reg, dict) else ""
-            if log: log(f"注册失败: {msg or '未知错误'}")
+            err = f"注册失败: {msg or '未知错误'}"
+            if log: log(err)
             return None
         except Exception as e:
-            if log: log(f"注册异常: {e}")
+            err = f"注册异常: {e}"
+            if log: log(err)
             return None
+        finally:
+            # 事件流留痕，成功失败都记。「补号一直补不上」是常见故障，
+            # 只有 app.log 时得往回翻很久，事件流里能直接看出卡在哪一步。
+            events.record("register", bool(acc),
+                          email=(acc or {}).get("email", ""), error=err)
 
     def _rand_pw(self) -> str:
         return "AutoSw%06d!" % random.randint(0, 999999)

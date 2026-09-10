@@ -92,6 +92,14 @@ class _JsApi:
     def set_autostart(self, on):
         return self._ui.set_autostart(bool(on))
 
+    # ---- 事件流（换号 / 注册 / 恢复的留痕）----
+    def get_events(self, limit=100):
+        return self._ui.get_events(limit)
+
+    def clear_events(self):
+        self._ui.clear_events()
+        return True
+
 
 class WebAppUI:
     def __init__(self, config: Config, pool: AccountPool, switcher: Switcher,
@@ -212,13 +220,15 @@ class WebAppUI:
         except Exception:
             running = False
 
-        # 热力图 + 续航预测（stats 异常不影响状态快照）
+        # 热力图 + 续航预测 + 链路可用率（stats 异常不影响状态快照）
         try:
             import stats as _stats
             heat = _stats.hourly_series(7)
             avg_daily = _stats.avg_daily_bytes(3)
+            uptime = _stats.availability(24)
         except Exception:
             heat, avg_daily = [], None
+            uptime = {"pct": None, "ok": 0, "total": 0}
         # 只有真正拿到剩余流量时才能预测续航：查询失败时 tr_state 是
         # {"err": ...}，根本没有 remain 字段——直接索引会抛 KeyError，
         # 而它发生在 build_state 里，会让整轮状态推送中断、界面停止更新。
@@ -235,6 +245,7 @@ class WebAppUI:
             "traffic": tr_state,
             "traffic_heatmap": heat,
             "fuel_days": fuel_days,
+            "link_uptime": uptime,
             "expire_ts": self._expire or 0,
             "expiry_threshold_s": float(
                 self.config.get("expiry_threshold_seconds", 1800.0)),
@@ -318,7 +329,7 @@ class WebAppUI:
 
         def work():
             self._set_busy(True, "切换中…")
-            r = self.switcher.switch_to_email(email)
+            r = self.switcher.switch_to_email(email, reason="手动选择账号")
             if r.ok:
                 self.log(f"切换成功: {email} → 代理 {r.proxy_ip}", "ok")
                 self.toast(f"切换成功 {email}")
@@ -460,6 +471,22 @@ class WebAppUI:
             return {"ok": False, "error": str(e)}
         self.log(f"开机自启: {'开' if on else '关'}", "ok" if on else "")
         return {"ok": True, "error": None}
+
+    # ================= 事件流 =================
+    def get_events(self, limit=100) -> list:
+        """最近的事件（新的在前）。events 模块内部已吞异常，这里不会再抛。"""
+        try:
+            import events
+            return events.recent(limit)
+        except Exception:
+            return []
+
+    def clear_events(self):
+        try:
+            import events
+            events.clear()
+        except Exception:
+            pass
 
     def save_settings(self, p: dict) -> dict:
         """校验并落盘；端口变更且引擎在跑则后台重启代理。

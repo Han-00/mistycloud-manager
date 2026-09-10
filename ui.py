@@ -432,7 +432,7 @@ class AppUI:
 
         def work():
             self._post(lambda: self.btn_state.configure(text="切换中..."))
-            r = self.switcher.switch_to_email(email)
+            r = self.switcher.switch_to_email(email, reason="手动选择账号")
             if r.ok:
                 self.log(f"切换成功: {email} → 代理 {r.proxy_ip}", "ok")
             else:
