@@ -20,6 +20,7 @@ import customtkinter as ctk
 
 from account_pool import AccountPool
 from config import Config
+from settings_schema import apply_settings
 from switcher import Switcher
 from v2ray_engine import V2RayEngine
 
@@ -1010,36 +1011,16 @@ class GlassAppUI:
 
         def save():
             try:
-                self.config.set("min_traffic_mb", float(vars["min_traffic_mb"].get()))
-                mins = float(vars["expiry_threshold_minutes"].get())
-                self.config.set("expiry_threshold_seconds", mins * 60)
-                hours = float(vars["account_lifetime_hours"].get())
-                if hours <= 0:
-                    raise ValueError("账号生命周期必须为正数")
-                self.config.set("account_lifetime_seconds", hours * 3600)
-                self.config.set("reserve_accounts", max(0, int(vars["reserve_accounts"].get())))
-                new_port = int(vars["proxy_port"].get())
-                if not (1 <= new_port <= 65535):
-                    raise ValueError("端口必须在 1-65535 之间")
+                # 校验规则集中在 settings_schema，三个 UI 共用同一套
                 old_port = int(self.config.get("proxy_port", 0) or 0)
-                self.config.set("proxy_port", new_port)
-                self.config.set("feishu_webhook", vars["feishu_webhook"].get().strip())
-                parts = [p.strip() for p in vars["feishu_app"].get().split("/")]
-                for i, k in enumerate(("feishu_app_id", "feishu_app_secret", "feishu_open_id")):
-                    self.config.set(k, parts[i] if i < len(parts) else "")
-                # 日报时间：宽松校验（空=禁用；只卡格式不强制功能）
-                import re
-                drt = vars["daily_report_time"].get().strip()
-                if drt:
-                    mch = re.match(r"^(\d{1,2}):(\d{2})$", drt)
-                    if not mch or int(mch.group(1)) > 23 or int(mch.group(2)) > 59:
-                        raise ValueError("日报推送时间格式应为 HH:MM（如 09:00）")
-                    drt = f"{int(mch.group(1)):02d}:{mch.group(2)}"
-                self.config.set("daily_report_time", drt)
+                values = apply_settings(
+                    self.config, {k: v.get() for k, v in vars.items()})
+                # 托盘/自启开关是玻璃版独有的字段，不进共享校验
                 self.config.set("minimize_to_tray", bool(self.mtt_var.get()))
                 self.config.save()
                 self._set_autostart(bool(self.autostart_var.get()))
                 self.log("设置已保存", "ok")
+                new_port = int(values.get("proxy_port", old_port))
                 if new_port != old_port and self.engine.is_running():
                     self._restart_engine_async(f"端口 {old_port} → {new_port}")
                 dlg.destroy()

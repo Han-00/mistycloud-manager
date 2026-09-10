@@ -24,6 +24,7 @@ import time
 
 from account_pool import AccountPool
 from config import Config
+from settings_schema import apply_settings
 from switcher import Switcher
 from v2ray_engine import V2RayEngine
 
@@ -411,37 +412,16 @@ class WebAppUI:
         }
 
     def save_settings(self, p: dict) -> dict:
-        """校验并落盘；端口变更且引擎在跑则后台重启代理。"""
+        """校验并落盘；端口变更且引擎在跑则后台重启代理。
+
+        校验规则集中在 settings_schema，三个 UI 共用同一套。
+        """
         try:
-            self.config.set("min_traffic_mb", float(p["min_traffic_mb"]))
-            self.config.set("expiry_threshold_seconds",
-                            float(p["expiry_threshold_minutes"]) * 60)
-            hours = float(p["account_lifetime_hours"])
-            if hours <= 0:
-                raise ValueError("账号生命周期必须为正数")
-            self.config.set("account_lifetime_seconds", hours * 3600)
-            self.config.set("reserve_accounts",
-                            max(0, int(float(p["reserve_accounts"]))))
-            new_port = int(float(p["proxy_port"]))
-            if not (1 <= new_port <= 65535):
-                raise ValueError("端口必须在 1-65535 之间")
             old_port = int(self.config.get("proxy_port", 0) or 0)
-            self.config.set("proxy_port", new_port)
-            self.config.set("feishu_webhook", str(p.get("feishu_webhook", "")).strip())
-            parts = [x.strip() for x in str(p.get("feishu_app", "")).split("/")]
-            for i, k in enumerate(("feishu_app_id", "feishu_app_secret",
-                                   "feishu_open_id")):
-                self.config.set(k, parts[i] if i < len(parts) else "")
-            drt = str(p.get("daily_report_time", "")).strip()
-            if drt:
-                import re
-                m = re.match(r"^(\d{1,2}):(\d{2})$", drt)
-                if not m or int(m.group(1)) > 23 or int(m.group(2)) > 59:
-                    raise ValueError("日报时间须为 HH:MM（如 09:00）")
-                drt = f"{int(m.group(1)):02d}:{m.group(2)}"
-            self.config.set("daily_report_time", drt)
+            values = apply_settings(self.config, p)
             self.config.save()
             self.log("设置已保存", "ok")
+            new_port = int(values.get("proxy_port", old_port))
             if new_port != old_port and self.engine.is_running():
                 self._restart_engine_async(f"端口 {old_port} → {new_port}")
             self.push_state()
