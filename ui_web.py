@@ -203,9 +203,13 @@ class WebAppUI:
             avg_daily = _stats.avg_daily_bytes(3)
         except Exception:
             heat, avg_daily = [], None
+        # 只有真正拿到剩余流量时才能预测续航：查询失败时 tr_state 是
+        # {"err": ...}，根本没有 remain 字段——直接索引会抛 KeyError，
+        # 而它发生在 build_state 里，会让整轮状态推送中断、界面停止更新。
         fuel_days = None
-        if tr_state and avg_daily:
-            fuel_days = round(tr_state["remain"] / avg_daily, 1)
+        remain = (tr_state or {}).get("remain")
+        if remain is not None and avg_daily:
+            fuel_days = round(remain / avg_daily, 1)
 
         return {
             "active": active["email"] if active else None,

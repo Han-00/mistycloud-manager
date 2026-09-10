@@ -65,11 +65,14 @@ def main():
         f"应优先命中内嵌引擎，实际命中 {eng.v2ray_source_dir}"
     print("    ✓ 内嵌引擎被优先命中（目标机无需安装 Misty）")
 
-    # ---- 前端页面 ----
-    webui = os.path.join(INTERNAL, "webui", "index.html")
-    print(f"[4] 前端页面     : {webui}")
-    assert os.path.exists(webui), "webui/index.html 未打进包"
-    print("    ✓ webui 已打包")
+    # ---- 前端资源 ----
+    # 拆分成三个文件后，漏收任何一个页面都会残掉（少 css 就全无样式、
+    # 少 js 就整个界面不动），所以三个都要点名检查。
+    print("[4] 前端资源（webui/）")
+    for rel in ("index.html", "app.css", "app.js"):
+        p = os.path.join(INTERNAL, "webui", rel)
+        assert os.path.exists(p), f"webui/{rel} 未打进包"
+        print(f"    ✓ webui/{rel}")
 
     # ---- 复制到可写工作目录（v2ray 要往里写 config.json）----
     print("[5] prepare() 复制引擎到工作目录")

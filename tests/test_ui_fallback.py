@@ -7,6 +7,9 @@
 
 做法：用 `sys.modules[m] = None` 让 import 抛 ImportError，不依赖真实环境差异。
 不建窗口、不连网、零副作用。
+
+⚠ 必须用**带 tkinter 的解释器**跑（如 C:\Python313\python.exe），因为回退链的终点
+ttk 版依赖 tkinter；托管版 Python 不带它，会直接给出提示并返回退出码 1。
 """
 import os
 import sys
@@ -53,7 +56,27 @@ def _load(block_mods):
         _reset()
 
 
+def _require_tk():
+    """ttk 版是回退链的终点，没有 tkinter 就验不了「终极降级」这一步。
+
+    ⚠ 托管版 Python（.workbuddy/binaries）默认不带 tkinter。缺了它不是代码坏了，
+    是跑错解释器了——直接抛 ModuleNotFoundError 会让人误以为是回退链的 bug，
+    所以在这里提前拦住并给出可执行的修复方式。
+    """
+    try:
+        import tkinter  # noqa: F401
+    except ImportError:
+        print("[x] 当前解释器没有 tkinter，无法验证降级链的终点（ttk 版）。")
+        print(f"    解释器: {sys.executable}")
+        print(r"    换一个带 tkinter 的解释器重跑: C:\Python313\python.exe tests/test_ui_fallback.py")
+        return False
+    return True
+
+
 def main():
+    if not _require_tk():
+        return False
+
     # [1] 依赖全不可用 → 必须落到 ttk，且两条原因都在
     _cls, name, notes = _load(["webview", "customtkinter"])
     assert name.startswith("ttk"), f"应降到 ttk 版，实际 {name}"
@@ -78,7 +101,8 @@ def main():
     print(f"[3] 当前环境 → {name}，回退 {len(notes)} 次 ✓")
 
     print("\n== 界面回退链测试通过 ==")
+    return True
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(0 if main() else 1)
