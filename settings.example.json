@@ -14,5 +14,12 @@
   "win_x": null,
   "win_y": null,
   "win_w": null,
-  "win_h": null
+  "win_h": null,
+  "ui_theme": "浅色云雾",
+  "minimize_to_tray": true,
+  "system_proxy": false,
+  "proxy_bypass_domains": [
+    "example-extra.com"
+  ],
+  "daily_report_time": "09:00"
 }

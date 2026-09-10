@@ -17,6 +17,9 @@ import time
 from config import Config
 from http_client import HttpError
 
+# GUI 进程（pythonw / 打包 exe）里调 netstat/tasklist/taskkill 必须不弹控制台黑窗
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
 
 def _base_dir() -> str:
     if getattr(sys, "frozen", False):
@@ -179,12 +182,13 @@ class V2RayEngine:
                      if isinstance(o, dict) and o.get("protocol") != "vmess"]
         outbounds.insert(0, self._vmess_outbound(node))
         cfg["outbounds"] = outbounds
+        self._apply_bypass_routing(cfg)
         return cfg
 
     def _fallback_config(self, node: dict, port: int) -> dict:
         """模板缺失时的兜底配置（含 mux）。"""
         http_port = port + 1 if port != 10809 else 10810
-        return {
+        cfg = {
             "log": {"loglevel": "warning"},
             "inbounds": [
                 {
@@ -213,6 +217,45 @@ class V2RayEngine:
                                    "domain": ["mistycapsule.xyz"]}]},
             "_http_port": http_port,
         }
+        self._apply_bypass_routing(cfg)
+        return cfg
+
+    # ---- 直连分流（settings.json 的 proxy_bypass_domains）----
+    def _bypass_domains(self) -> list:
+        """直连域名列表（去「*.」前缀、小写、去重保序）。"""
+        try:
+            raw = self.config.get("proxy_bypass_domains") or []
+        except Exception:
+            return []
+        out, seen = [], set()
+        for d in raw:
+            d = str(d or "").strip().strip(".").lower()
+            if d.startswith("*."):
+                d = d[2:]
+            if d and d not in seen:
+                seen.add(d)
+                out.append(d)
+        return out
+
+    def _apply_bypass_routing(self, cfg: dict) -> None:
+        """把直连域名注入 routing：已进入代理的这些域名走 direct 出去。
+
+        配置每次都从模板/兜底重建，所以这里追加不会跨次累积。
+        """
+        domains = self._bypass_domains()
+        if not domains:
+            return
+        outbounds = cfg.setdefault("outbounds", [])
+        if not any(isinstance(o, dict) and o.get("tag") == "direct" for o in outbounds):
+            outbounds.append({"tag": "direct", "protocol": "freedom"})
+        routing = cfg.get("routing")
+        if not isinstance(routing, dict) or not isinstance(routing.get("rules"), list):
+            routing = {"domainStrategy": "IPIfNonMatch", "rules": []}
+            cfg["routing"] = routing
+        # 插到最前：保证早于模板里可能存在的「全走代理」catch-all 生效
+        routing["rules"].insert(0, {
+            "type": "field", "outboundTag": "direct", "domain": domains,
+        })
 
     def write_config(self, node: dict) -> str:
         """写 config.json（原子写），返回路径。"""
@@ -302,7 +345,8 @@ class V2RayEngine:
         if sys.platform != "win32":
             return
         try:
-            out = subprocess.run(["netstat", "-ano"], capture_output=True, timeout=10)
+            out = subprocess.run(["netstat", "-ano"], capture_output=True,
+                                 timeout=10, creationflags=_NO_WINDOW)
             text = (out.stdout or b"").decode("utf-8", errors="ignore")
             import re
             for line in text.splitlines():
@@ -317,6 +361,7 @@ class V2RayEngine:
                             proc = subprocess.run(
                                 ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
                                 capture_output=True, timeout=8,
+                                creationflags=_NO_WINDOW,
                             )
                             name = (proc.stdout or b"").decode(
                                 "mbcs", errors="ignore").lower()
@@ -328,7 +373,8 @@ class V2RayEngine:
                             if not own or not img or not img.startswith(own):
                                 continue
                             subprocess.run(["taskkill", "/F", "/PID", pid],
-                                           capture_output=True, timeout=8)
+                                           capture_output=True, timeout=8,
+                                           creationflags=_NO_WINDOW)
                         except OSError:
                             pass
         except (subprocess.TimeoutExpired, OSError):

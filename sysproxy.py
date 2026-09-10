@@ -19,6 +19,34 @@ _BACKUP_KEY = r"Software\AccountMasterPro2"
 OVERRIDE_DEFAULT = "localhost;127.*;<local>"
 
 
+def _norm_domain(d) -> str:
+    """归一化直连域名：去空白/首尾点/「*.」前缀，小写；空串表示无效。"""
+    d = str(d or "").strip().strip(".").lower()
+    if d.startswith("*."):
+        d = d[2:]
+    return d
+
+
+def _bypass_string(domains) -> str:
+    """直连域名列表 → ProxyOverride 串（基础例外 + *.域名 + 裸域，去重保序）。
+
+    WinINET 语义：*.douyin.com 只覆盖子域，不覆盖裸域，所以两种都写。
+    """
+    parts = [OVERRIDE_DEFAULT]
+    seen = set()
+    for raw in domains or []:
+        d = _norm_domain(raw)
+        if not d or d in seen:
+            continue
+        seen.add(d)
+        if "*" in d:                     # 用户自写的通配项原样保留
+            parts.append(d)
+        else:
+            parts.append(f"*.{d}")
+            parts.append(d)
+    return ";".join(parts)
+
+
 def available() -> bool:
     return sys.platform == "win32"
 
@@ -39,7 +67,9 @@ def _reg_read(key: str, name: str):
 def _reg_write(key: str, name: str, value, kind: str = "sz") -> None:
     import winreg
     t = winreg.REG_DWORD if kind == "dword" else winreg.REG_SZ
-    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key, 0, winreg.KEY_SET_VALUE) as k:
+    # CreateKeyEx：备份键首次写入时还不存在，OpenKey 会直接 FileNotFoundError
+    with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, key, 0,
+                            winreg.KEY_SET_VALUE) as k:
         winreg.SetValueEx(k, name, 0, t, value)
 
 
@@ -135,15 +165,18 @@ def _pop_backup() -> dict | None:
 
 # ---- 开/关 ----
 
-def enable(http_port: int) -> bool:
-    """把系统代理指向 127.0.0.1:{http_port}。先备份用户原状态（只备份一次）。"""
+def enable(http_port: int, bypass_domains=None) -> bool:
+    """把系统代理指向 127.0.0.1:{http_port}。先备份用户原状态（只备份一次）。
+
+    bypass_domains：直连域名列表，合并进 ProxyOverride（None = 仅基础例外）。
+    """
     if not available():
         return False
     try:
         _take_backup()
         _reg_write(_INET_KEY, "ProxyEnable", 1, "dword")
         _reg_write(_INET_KEY, "ProxyServer", f"127.0.0.1:{int(http_port)}")
-        _reg_write(_INET_KEY, "ProxyOverride", OVERRIDE_DEFAULT)
+        _reg_write(_INET_KEY, "ProxyOverride", _bypass_string(bypass_domains))
         _reg_delete(_INET_KEY, "AutoConfigURL")
         _notify()
         return True
@@ -186,6 +219,8 @@ def apply_if_enabled(config, engine, log=None) -> bool:
 
     守卫链：平台可用 → 开关为开 → 引擎进程在跑 → HTTP 端口实测可连。
     注册表已一致则静默；不一致才改写并出日志（防每轮刷屏）。
+    直连域名列表也纳入一致性比较——settings.json 里改了列表会在
+    下一轮收敛自动重写 ProxyOverride，无需重启。
     端口未就绪时不写注册表（指过去等于全网断网），等下轮收敛。
     """
     if not available() or engine is None:
@@ -200,9 +235,11 @@ def apply_if_enabled(config, engine, log=None) -> bool:
             return False
         st = _read_state()
         target = f"127.0.0.1:{hp}"
-        if st["enable"] == 1 and st["server"] == target:
+        domains = config.get("proxy_bypass_domains") or []
+        if (st["enable"] == 1 and st["server"] == target
+                and st["override"] == _bypass_string(domains)):
             return True   # 已一致，静默
-        if not enable(hp):
+        if not enable(hp, domains):
             return False
         if log:
             log(f"系统代理已指向 127.0.0.1:{hp}", "ok")

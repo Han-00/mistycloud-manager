@@ -31,6 +31,40 @@ DEFAULTS = {
     "minimize_to_tray": True,       # 关闭按钮 → 最小化到托盘（托盘不可用时忽略）
     # 系统代理 / 日报
     "system_proxy": False,          # 系统代理开关（期望状态；崩溃恢复的事实源）
+    # 内置直连域名（国内站走代理反而卡）：与 settings.json 的同名键去重合并生效
+    "proxy_bypass_domains": [
+        # 抖音/字节系
+        "douyin.com", "douyinpic.com", "douyinvod.com", "snssdk.com",
+        "bytecdn.cn", "zjcdn.com", "bytedance.com", "byteimg.com",
+        "pstatp.com", "ixigua.com", "amemv.com", "doubao.com",
+        # 飞书/钉钉
+        "feishu.cn", "larkoffice.com", "larksuite.com", "dingtalk.com",
+        # 网课平台（学习通/智慧树/雨课堂/中国大学MOOC）
+        "chaoxing.com", "zhihuishu.com", "yuketang.cn", "icourse163.org",
+        # AI（DeepSeek/Kimi/智谱等；文心/通义/元宝随百度/阿里/腾讯域名覆盖）
+        "deepseek.com", "moonshot.cn", "bigmodel.cn", "chatglm.cn", "zhipuai.cn",
+        # 腾讯/QQ/微信
+        "qq.com", "tencent.com", "gtimg.com", "idqqimg.com", "qpic.cn",
+        # 阿里/淘宝/支付宝/高德
+        "taobao.com", "tmall.com", "alicdn.com", "tbcdn.cn", "alipay.com",
+        "alipayobjects.com", "aliyun.com", "aliyuncs.com", "amap.com",
+        # 百度
+        "baidu.com", "bdstatic.com", "bcebos.com", "baidubce.com",
+        # 网易（邮箱/云音乐/游戏）
+        "163.com", "126.com", "126.net", "netease.com", "ydstatic.com",
+        # B站
+        "bilibili.com", "hdslb.com", "bilivideo.com", "biliapi.net",
+        # 微博/知乎/小红书
+        "weibo.com", "weibo.cn", "sina.com.cn", "sinaimg.cn",
+        "zhihu.com", "zhimg.com", "xiaohongshu.com", "xhscdn.com",
+        # 京东/视频/直播/音乐
+        "jd.com", "360buyimg.com", "youku.com", "ykimg.com", "iqiyi.com",
+        "iqiyipic.com", "kuaishou.com", "huya.com", "douyu.com",
+        "kugou.com", "kuwo.cn",
+        # 办公/校园/政务/生活
+        "wps.cn", "kdocs.cn", "csdn.net", "juejin.cn", "gitee.com",
+        "edu.cn", "gov.cn", "12306.cn", "mihoyo.com",
+    ],
     "daily_report_time": "09:00",   # 每日日报推送时间（HH:MM，空串=禁用）
 }
 
@@ -65,6 +99,14 @@ class Config:
                 for k, v in loaded.items():
                     if k not in merged:
                         merged[k] = v
+                # 直连域名是「追加」语义：内置默认 + settings.json 里追加的，去重合并。
+                # （程序运行中会整写本文件，仅靠文件保存会丢内置域名）
+                if not isinstance(merged.get("proxy_bypass_domains"), list):
+                    merged["proxy_bypass_domains"] = list(DEFAULTS["proxy_bypass_domains"])
+                else:
+                    merged["proxy_bypass_domains"] = list(dict.fromkeys(
+                        [*DEFAULTS["proxy_bypass_domains"],
+                         *merged["proxy_bypass_domains"]]))
                 self.data = merged
         except FileNotFoundError:
             pass  # 用默认

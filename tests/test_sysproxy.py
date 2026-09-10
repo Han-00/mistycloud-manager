@@ -105,6 +105,14 @@ assert not any(k[0] == BK for k in REG), "备份键必须清除"
 assert not sysproxy.has_backup()
 print("[3] disable 恢复四元组并清备份 ✓")
 
+# ---- [3b] enable 带直连域名：合并进 ProxyOverride ----
+REG.clear()
+assert sysproxy.enable(10809, ["douyin.com", "*.ixigua.com", "douyin.com", "", None]) is True
+assert REG[(INET, "ProxyOverride")] == (
+    f"{sysproxy.OVERRIDE_DEFAULT};*.douyin.com;douyin.com;*.ixigua.com;ixigua.com"), \
+    "必须展开成 *.域名 + 裸域 并去重"
+print("[3b] enable 合并直连域名到 ProxyOverride ✓")
+
 # ---- [4] 无备份时 disable 仅关开关 ----
 REG.clear()
 REG[(INET, "ProxyEnable")] = 1
@@ -133,6 +141,20 @@ eng.http_port = 10889
 assert sysproxy.apply_if_enabled(cfg, eng) is True
 assert REG[(INET, "ProxyServer")] == "127.0.0.1:10889"
 print("[6] 收敛成功 / 重复静默 / 端口变更跟随 ✓")
+
+# ---- [6b] 直连域名：写入 ProxyOverride + 变更触发重新收敛 ----
+eng2 = FakeEngine()
+cfg_b = FakeConfig({"system_proxy": True, "proxy_bypass_domains": ["douyin.com"]})
+assert sysproxy.apply_if_enabled(cfg_b, eng2) is True
+assert REG[(INET, "ProxyOverride")] == (
+    f"{sysproxy.OVERRIDE_DEFAULT};*.douyin.com;douyin.com")
+writes_before = len(REG)
+assert sysproxy.apply_if_enabled(cfg_b, eng2) is True
+assert len(REG) == writes_before, "域名未变不得重复写"
+cfg_b.d["proxy_bypass_domains"] = ["douyin.com", "ixigua.com"]
+assert sysproxy.apply_if_enabled(cfg_b, eng2) is True, "域名变了必须重新收敛"
+assert "*.ixigua.com" in REG[(INET, "ProxyOverride")]
+print("[6b] 直连域名写入 / 未变静默 / 变更重收敛 ✓")
 
 # ---- [7] 开关关时 apply 不做任何事 ----
 REG2 = dict(REG)
