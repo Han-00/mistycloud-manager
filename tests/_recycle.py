@@ -42,12 +42,32 @@ def recycle(path: str) -> bool:
     op.wFunc = FO_DELETE
     op.pFrom = path + "\0\0"          # 双 NUL 结尾，多路径用单 NUL 分隔
     op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI
-    ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
+    # ⚠ 之前的实现把 fFlags 当返回码打印（0x454=1108，恰好是各标志位之和），
+    # 看起来像错误码，误导排查。真正的返回值是函数返回值，失败细节看
+    # fAnyOperationsAborted。FOF_NOERRORUI 会吞掉错误弹窗，所以失败是静默的。
+    rc = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
     gone = not os.path.exists(path)
-    print(f"[{'ok' if gone else 'FAIL'}] {path}  (rc={op.fFlags}, aborted={op.fAnyOperationsAborted})")
+    print(f"[{'ok' if gone else 'FAIL'}] {path}  (rc={rc}, aborted={op.fAnyOperationsAborted})")
     return gone
 
 
+def recycle_batch(path: str, chunk: int = 100) -> bool:
+    """recycle() 失败时的降级路径：把目录内容分批送回收站，最后删目录壳。
+
+    整目录一次送 1000+ 文件偶尔静默失败（FOF_NOERRORUI 吞掉原因），
+    分小批重试往往能过。仍失败则保留现场让用户手动处理。
+    """
+    if recycle(path):
+        return True
+    print("  整目录回收失败，降级为分批…")
+    for root, dirs, files in os.walk(path, topdown=False):
+        for name in files:
+            recycle(os.path.join(root, name))
+        for name in dirs:
+            recycle(os.path.join(root, name))
+    return recycle(path)
+
+
 if __name__ == "__main__":
-    ok = all(recycle(p) for p in sys.argv[1:])
+    ok = all(recycle_batch(p) for p in sys.argv[1:])
     sys.exit(0 if ok else 1)
