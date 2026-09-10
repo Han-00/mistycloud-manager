@@ -18,9 +18,12 @@ _DEFAULT = {
     "switch_fail": 0,
     "traffic_used": 0,         # 当日消耗流量（字节）
     "traffic_base": {},        # {email: 最近观测的服务端累计已用}，跨天保留
+    "hourly": {},              # {"YYYY-MM-DDTHH": 该小时消耗字节}，保留近 8 天
     "last_report_date": "",    # 最近成功推送日报的日期
     "pending_report": None,    # 待推送的上一日全天计数
 }
+
+_HOURLY_KEEP_DAYS = 8          # 小时桶保留天数（热力图用 7 天，多留 1 天余量）
 
 
 def _base_dir() -> str:
@@ -67,6 +70,20 @@ class Stats:
 
     def _today(self) -> str:
         return time.strftime("%Y-%m-%d")
+
+    def _hour_key(self) -> str:
+        """当前小时桶键（测试可注入替代，与 _today 同理）。"""
+        return time.strftime("%Y-%m-%dT%H")
+
+    def _prune_hourly_locked(self):
+        """修剪 8 天前的小时桶（键为定长可排序字符串，按字典序比较）。"""
+        cutoff = time.strftime("%Y-%m-%dT%H",
+                               time.localtime(time.time()
+                                              - _HOURLY_KEEP_DAYS * 86400))
+        hourly = self.data.get("hourly")
+        if isinstance(hourly, dict):
+            self.data["hourly"] = {k: v for k, v in hourly.items()
+                                   if k >= cutoff}
 
     def _rollover_locked(self):
         """日期翻转：旧日计数固化进 pending（已有未推送的则保留旧的），
@@ -129,7 +146,11 @@ class Stats:
                     if delta > 0:
                         self.data["traffic_used"] = (
                             int(self.data.get("traffic_used") or 0) + delta)
+                        hourly = self.data.setdefault("hourly", {})
+                        hk = self._hour_key()
+                        hourly[hk] = int(hourly.get(hk) or 0) + delta
                     base[email] = used
+                self._prune_hourly_locked()
                 self._save_locked()
             except Exception:
                 pass
@@ -159,7 +180,46 @@ class Stats:
         with self._lock:
             d = dict(self.data)
             d["traffic_base"] = dict(d.get("traffic_base") or {})
+            d["hourly"] = dict(d.get("hourly") or {})
             return d
+
+    # ---- 热力图 / 续航预测（供 UI）----
+
+    def hourly_series(self, days: int = 7) -> list:
+        """近 N 天小时桶，[[小时键, 字节], ...] 按时间升序，仅含有数据的桶。"""
+        cutoff = time.strftime("%Y-%m-%dT%H",
+                               time.localtime(time.time() - days * 86400))
+        with self._lock:
+            hourly = dict(self.data.get("hourly") or {})
+        return sorted(([k, int(v)] for k, v in hourly.items() if k >= cutoff),
+                      key=lambda x: x[0])
+
+    def avg_daily_bytes(self, days: int = 3):
+        """近 N 天平均日消耗（字节/天）；当天按已流逝时长折算权重。
+        无数据返回 None。分母 = 完整天数 + 当天已流逝比例（下限 1 小时），
+        避免把"刚过去的半天"当成一整天拉低均值。"""
+        cutoff = time.time() - days * 86400
+        today = self._today()
+        with self._lock:
+            hourly = dict(self.data.get("hourly") or {})
+        total = 0.0
+        dates = set()
+        for k, v in hourly.items():
+            try:
+                ts = time.mktime(time.strptime(k, "%Y-%m-%dT%H"))
+            except (ValueError, OverflowError):
+                continue
+            if ts < cutoff:
+                continue
+            total += float(v)
+            dates.add(k[:10])
+        if total <= 0 or not dates:
+            return None
+        lt = time.localtime()
+        elapsed_frac = max((lt.tm_hour * 3600 + lt.tm_min * 60 + lt.tm_sec)
+                           / 86400.0, 1 / 24)
+        effective = sum(elapsed_frac if d == today else 1.0 for d in dates)
+        return total / max(effective, elapsed_frac)
 
 
 def fmt_bytes(n) -> str:
@@ -202,3 +262,17 @@ def add_traffic(email: str, used):
         get().add_traffic(email, used)
     except Exception:
         pass
+
+
+def hourly_series(days: int = 7) -> list:
+    try:
+        return get().hourly_series(days)
+    except Exception:
+        return []
+
+
+def avg_daily_bytes(days: int = 3):
+    try:
+        return get().avg_daily_bytes(days)
+    except Exception:
+        return None

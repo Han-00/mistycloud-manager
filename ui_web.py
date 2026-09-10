@@ -196,12 +196,25 @@ class WebAppUI:
         except Exception:
             running = False
 
+        # 热力图 + 续航预测（stats 异常不影响状态快照）
+        try:
+            import stats as _stats
+            heat = _stats.hourly_series(7)
+            avg_daily = _stats.avg_daily_bytes(3)
+        except Exception:
+            heat, avg_daily = [], None
+        fuel_days = None
+        if tr_state and avg_daily:
+            fuel_days = round(tr_state["remain"] / avg_daily, 1)
+
         return {
             "active": active["email"] if active else None,
             "engine_running": running,
             "port": getattr(self.engine, "port", None),
             "link": ll or None,
             "traffic": tr_state,
+            "traffic_heatmap": heat,
+            "fuel_days": fuel_days,
             "expire_ts": self._expire or 0,
             "expiry_threshold_s": float(
                 self.config.get("expiry_threshold_seconds", 1800.0)),
@@ -530,8 +543,10 @@ class WebAppUI:
         except Exception:
             self._tray = None
 
-    def _make_tray_icon(self, status: str = "idle"):
-        """PIL 现画托盘图标：蓝色圆角底 + 白云 + 状态角标。"""
+    def _make_tray_icon(self, status: str = "idle", fuel=None):
+        """PIL 现画托盘图标：蓝色圆角底 + 白云 + 状态角标 + 顶部油量条。
+        fuel: 0.0~1.0 的流量水位（None=无数据不画条），
+        >50% 蓝 / 25~50% 黄 / <25% 红。"""
         from PIL import Image, ImageDraw
         img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
         d = ImageDraw.Draw(img)
@@ -539,30 +554,56 @@ class WebAppUI:
         d.ellipse([13, 24, 33, 44], fill=(255, 255, 255, 255))
         d.ellipse([26, 16, 50, 40], fill=(255, 255, 255, 255))
         d.rectangle([15, 34, 48, 44], fill=(255, 255, 255, 255))
+        if fuel is not None:
+            fuel = max(0.0, min(1.0, float(fuel)))
+            d.rounded_rectangle([8, 5, 56, 10], radius=3,
+                                fill=(255, 255, 255, 60))
+            if fuel > 0.003:
+                color = ((255, 255, 255) if fuel > 0.5
+                         else (245, 166, 35) if fuel > 0.25
+                         else (225, 75, 65))
+                alpha = 235 if fuel > 0.5 else 255
+                d.rounded_rectangle([8, 5, 8 + 48 * fuel, 10],
+                                    radius=3, fill=color + (alpha,))
         dot = {"ok": (31, 166, 92), "err": (225, 75, 65)}.get(
             status, (148, 163, 184))
         d.ellipse([40, 40, 62, 62], fill=dot + (255,),
                   outline=(255, 255, 255, 255), width=2)
         return img
 
-    def _update_tray_status(self, status: str):
+    def _update_tray_status(self, status: str, fuel=None):
         if self._tray is None:
             return
         try:
-            self._tray.icon = self._make_tray_icon(status)
+            self._tray.icon = self._make_tray_icon(status, fuel)
         except Exception:
             pass
 
     def _sync_tray(self, st: dict):
-        """按状态快照刷新托盘角标颜色（绿=链路正常，红=异常，灰=未运行）。"""
+        """按状态快照刷新托盘：角标颜色（链路）+ 油量条（水位）+ tooltip。"""
         if self._tray is None:
             return
         try:
             if not st.get("engine_running"):
-                self._update_tray_status("idle")
+                status, link_txt = "idle", "未运行"
             else:
-                ll = st.get("link") or {}
-                self._update_tray_status("ok" if ll.get("ok") else "err")
+                ok = bool((st.get("link") or {}).get("ok"))
+                status = "ok" if ok else "err"
+                link_txt = "链路正常" if ok else "链路异常"
+            fuel = None
+            lines = ["账号大师 Pro", link_txt]
+            tr = st.get("traffic")
+            if tr and tr.get("total"):
+                fuel = max(0.0, min(1.0, tr["remain"] / tr["total"]))
+                from stats import fmt_bytes
+                txt = f"剩 {fmt_bytes(tr['remain'])}"
+                if st.get("fuel_days") is not None:
+                    txt += f" · 还能撑 {st['fuel_days']} 天"
+                lines.append(txt)
+            elif tr and tr.get("err"):
+                lines.append("流量查询失败")
+            self._update_tray_status(status, fuel)
+            self._tray.title = "\n".join(lines)
         except Exception:
             pass
 

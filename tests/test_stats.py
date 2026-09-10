@@ -117,4 +117,58 @@ assert stats.fmt_bytes(int(1.5 * 1024 ** 3)) == "1.50GB"
 assert stats.fmt_bytes("abc") == "-"
 print("[9] fmt_bytes ✓")
 
+# ---- [10] 小时桶：增量入桶 / 幂等不入桶 / 回退不入桶 ----
+import time as _time
+
+P4 = os.path.join(_TMP, "stats4.json")
+s4 = stats.Stats(P4)
+now = _time.time()
+hk_now = _time.strftime("%Y-%m-%dT%H", _time.localtime(now))
+hk_prev = _time.strftime("%Y-%m-%dT%H", _time.localtime(now - 3600))
+s4._hour_key = lambda: hk_prev
+s4.add_traffic("h@x.com", 100)          # 首观只设基线
+s4.add_traffic("h@x.com", 250)          # +150 → 上一小时桶
+s4._hour_key = lambda: hk_now
+s4.add_traffic("h@x.com", 250)          # 幂等：增量 0，不入桶
+s4.add_traffic("h@x.com", 100)          # 回退：不记负，不入桶
+s4.add_traffic("h@x.com", 140)          # +40 → 当前小时桶
+snap = s4.snapshot()
+assert snap["hourly"] == {hk_prev: 150, hk_now: 40}, snap["hourly"]
+print("[10] 小时桶：增量入桶 / 幂等 / 回退 ✓")
+
+# ---- [11] 小时桶持久化 + series 升序 ----
+s5 = stats.Stats(P4)
+series = s5.hourly_series(7)
+assert series == [[hk_prev, 150], [hk_now, 40]], series
+print("[11] 小时桶持久化 + series 升序 ✓")
+
+# ---- [12] 修剪：8 天前的桶被清掉 ----
+hk_old = _time.strftime("%Y-%m-%dT%H",
+                        _time.localtime(now - 9 * 86400))
+s5.data["hourly"][hk_old] = 999
+s5._hour_key = lambda: hk_now
+s5.add_traffic("h@x.com", 150)          # +10，触发修剪
+snap = s5.snapshot()
+assert hk_old not in snap["hourly"], "过期桶应被修剪"
+assert snap["hourly"].get(hk_now) == 50, snap["hourly"]
+print("[12] 过期小时桶修剪 ✓")
+
+# ---- [13] avg_daily_bytes：当天按已流逝折算 / 无数据 None ----
+P5 = os.path.join(_TMP, "stats5.json")
+s6 = stats.Stats(P5)
+assert s6.avg_daily_bytes(3) is None, "无数据应为 None"
+lt = _time.localtime(now)
+frac = max((lt.tm_hour * 3600 + lt.tm_min * 60 + lt.tm_sec) / 86400.0, 1/24)
+s6.data["hourly"] = {hk_now: 1000}      # 仅今天有数据
+avg = s6.avg_daily_bytes(3)
+# 测试与实现各自取 localtime，存在秒级漂移 → 用 1% 相对容差
+assert abs(avg - 1000 / frac) / (1000 / frac) < 0.01, (avg, frac)
+# 加昨天一整天 2000 → (2000 + 1000) / (1 + frac)
+hk_yday = _time.strftime("%Y-%m-%dT%H",
+                         _time.localtime(now - 86400))
+s6.data["hourly"][hk_yday] = 2000
+avg = s6.avg_daily_bytes(3)
+assert abs(avg - 3000 / (1 + frac)) / (3000 / (1 + frac)) < 0.01, avg
+print("[13] avg_daily_bytes 折算 ✓")
+
 print("\n== 日报统计测试通过 ==")
