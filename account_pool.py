@@ -29,6 +29,18 @@ def _atomic_write_json(path: str, data) -> None:
     os.replace(tmp, path)
 
 
+def _to_float(value, default: float = 0.0) -> float:
+    """宽松转 float：脏数据（None / "" / "abc"）一律取 default，不抛异常。
+
+    用于账号记录里的时间戳字段——它们由本地写入、理论上可信，
+    但界面渲染与批量清理都不该被一条坏记录带崩。
+    """
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 class AccountPool:
     def __init__(self, config: Config):
         self.config = config
@@ -61,23 +73,33 @@ class AccountPool:
     def count(self) -> int:
         return len(self.accounts)
 
-    def _is_valid(self, acc: dict) -> bool:
-        """未过期（客户端生命周期 + 服务端套餐到期）+ 未失效。"""
+    def is_usable(self, acc: dict) -> bool:
+        """账号当前是否可用：未失效 + 未过期（客户端生命周期 + 服务端套餐到期）。
+
+        公开 API —— 账号池内部（挑候选、清理过期、统计可用数）与三个界面
+        （账号列表弱化显示、下拉框是否列出）共用同一判断，语义稳定。
+
+        对脏数据健壮：时间戳解析失败按 0 处理，不抛异常。它的调用点遍布
+        界面渲染与批量清理路径，一条坏记录不该刷挂整个列表、或中断整轮清理。
+        （历史行为：字段无法解析时抛 ValueError——ui_web 用 try/except 兜住后
+        退化成"按 status 猜"，会静默显示错误的可用性；另两个界面则没有兜底。
+        现已统一为内部健壮，三个界面行为一致。）
+        """
         if acc.get("status") in ("banned", "expired"):
             return False
-        created = float(acc.get("created_at") or 0)
+        created = _to_float(acc.get("created_at"))
         if created <= 0:
             return False
-        lifetime = float(self.config.get("account_lifetime_seconds", 86400))
+        lifetime = _to_float(self.config.get("account_lifetime_seconds"), 86400)
         if (time.time() - created) >= lifetime:
             return False
-        ce = float(acc.get("class_expire") or 0)
+        ce = _to_float(acc.get("class_expire"))
         if ce > 0 and time.time() > ce:
             return False
         return True
 
     def count_valid(self) -> int:
-        return sum(1 for a in self.accounts if self._is_valid(a))
+        return sum(1 for a in self.accounts if self.is_usable(a))
 
     def get_active(self) -> dict | None:
         """当前在用账号（status=active）。"""
@@ -90,7 +112,7 @@ class AccountPool:
         """从备用池挑一个候选（未过期、非在用、非排除、非本轮已试）。"""
         skip = set(skip_emails)
         for a in self.accounts:
-            if not self._is_valid(a):
+            if not self.is_usable(a):
                 continue
             if a.get("status") == "active":
                 continue
@@ -202,7 +224,7 @@ class AccountPool:
         """
         with self._lock:
             for a in self.accounts:
-                if a.get("status") == "ready" and not self._is_valid(a):
+                if a.get("status") == "ready" and not self.is_usable(a):
                     a["status"] = "expired"
             before = len(self.accounts)
             self.accounts = [a for a in self.accounts

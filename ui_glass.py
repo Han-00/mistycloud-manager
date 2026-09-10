@@ -720,7 +720,7 @@ class GlassAppUI:
             # 账号列表 + 下拉
             self._build_rows()
             emails = [a["email"] for a in self.pool.all()
-                      if a.get("status") in ("ready", "active") and self.pool._is_valid(a)]
+                      if a.get("status") in ("ready", "active") and self.pool.is_usable(a)]
             current = self.account_var.get()
             self.account_combo.configure(values=emails or ["-"])
             if current not in emails and emails:

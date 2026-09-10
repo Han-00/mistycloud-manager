@@ -163,10 +163,9 @@ class WebAppUI:
         for a in self.pool.all():
             created = float(a.get("created_at") or 0)
             remain_s = max(0.0, lifetime - (now - created)) if created > 0 else 0.0
-            try:
-                valid = bool(self.pool._is_valid(a))
-            except Exception:
-                valid = a.get("status") in ("active", "ready")
+            # is_usable 内部已对脏数据健壮，这里不再需要 try/except——
+            # 原先兜住后会退化成"按 status 猜"，反而静默显示错误的可用性
+            valid = self.pool.is_usable(a)
             if valid:
                 valid_count += 1
             accounts.append({

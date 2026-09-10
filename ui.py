@@ -486,7 +486,7 @@ class AppUI:
                 self.tree.insert("", tk.END,
                                  values=(a["email"], status_txt, remain), tags=tags)
                 # 下拉框只列可用账号（ready/active 且未过期）
-                if status in ("ready", "active") and self.pool._is_valid(a):
+                if status in ("ready", "active") and self.pool.is_usable(a):
                     emails.append(a["email"])
             # 下拉框同步
             current = self.account_var.get()
