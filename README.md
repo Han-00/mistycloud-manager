@@ -1,8 +1,35 @@
 # 账号大师 Pro 2.0
 
-MistyCloud 临时账号自动注册 / 过期换号 / v2ray 代理管理，可视化 GUI。
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+[![Python 3.13+](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
+[![Platform: Windows](https://img.shields.io/badge/platform-Windows-0078d4.svg)](https://www.microsoft.com/windows)
+[![GitHub stars](https://img.shields.io/github/stars/Han-00/mistycloud-manager?style=social)](https://github.com/Han-00/mistycloud-manager)
+[![GitHub last commit](https://img.shields.io/github/last-commit/Han-00/mistycloud-manager)](https://github.com/Han-00/mistycloud-manager/commits/main)
 
-设计初衷：**简单高效，省去繁琐，直击要点**。
+> **MistyCloud 临时账号自动注册 / 过期换号 / v2ray 代理管理** —— 设计初衷：**简单高效，省去繁琐，直击要点**。
+
+## ✨ 核心特性
+
+- 🔄 **自动换号** — 流量低 / 即将过期 / 链路探测失败自动切换；冷却 15 分钟；备用不足自动注册补齐
+- 📡 **v2ray 代理一体化** — 内置引擎，端口开箱即用（10808 SOCKS / 10809 HTTP），系统代理自动接管
+- 🌐 **智能分流** — 默认全走代理 + 国内域名白名单直连（v2ray routing 层双写）
+- 📊 **数据面板** — 流量热力图（4 档色阶）/ 续航预测 / 链路可用率 / 换号事件流
+- 🖥️ **三套 UI 自动回退** — Web（pywebview 推荐）/ 玻璃质感（customtkinter）/ 经典 tkinter
+- 🪟 **托盘 + 自启 + 飞书通知** — 关闭 = 退出代理（无误触），可选开机自启和换号飞书推送
+- 📦 **可分发** — PyInstaller onedir 打包，v2ray 引擎内嵌，其他机器零依赖即用
+
+## 📑 目录
+
+- [启动](#启动)
+- [端口](#端口)
+- [v2ray 运行时](#v2ray-运行时)
+- [自动换号](#自动换号)
+- [飞书通知（可选）](#飞书通知可选)
+- [目录说明](#目录说明)
+- [打包分发](#打包分发)
+- [注意](#注意)
+- [协议](#协议)
+- [致谢](#致谢)
 
 ## 启动
 
@@ -62,7 +89,26 @@ MistyCloud 临时账号自动注册 / 过期换号 / v2ray 代理管理，可视
 | `app.log` | 运行日志 | ❌ |
 | `v2ray_work/` | v2ray 运行时副本 | ❌ |
 
+## 打包分发
+
+```bash
+python build_dist.py
+# 产出：dist/账号大师Pro2_v2.0_YYYYMMDD.zip（含 v2ray 引擎，零依赖即用）
+```
+
+onedir 模式 + 排除 numpy/scipy 等大依赖，最终 ~35 MB。详见 `docs/分发使用说明.txt`。
+
 ## 注意
 
 - **不要**同时运行 bat 版与打包 exe 版：两者都用 10808 端口，会互抢。
 - 换号 / 注册依赖网络，全程 6~10 秒属正常（瓶颈在临时邮箱收码与远端接口）。
+- 本项目为个人工具，**协议 GPL-3.0（强传染）**，fork / 衍生作品也必须开源。
+
+## 协议
+
+本项目采用 [GPL-3.0](LICENSE) 协议发布。完整条款见 [LICENSE](LICENSE) 文件。
+
+## 致谢
+
+- v2ray 引擎来自本地 Misty 安装（`v2ray.exe / v2ctl.exe / geoip.dat / geosite.dat`）
+- [pywebview](https://pywebview.flowrl.com/) · [customtkinter](https://github.com/TomSchimansky/CustomTkinter) · [Flask](https://flask.palletsprojects.com/) 等开源项目
