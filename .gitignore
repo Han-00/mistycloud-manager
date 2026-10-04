@@ -28,3 +28,14 @@ events.jsonl.*
 
 # WorkBuddy 项目工作区（记忆/日志等本地数据）
 .workbuddy/
+
+# 本地浏览器验收产物
+.playwright-cli/
+output/playwright/
+
+# 本机诊断草稿和历史数据副本
+/_diag_*
+/_hist_copy.db
+
+# 旧 Android MOD 原型；现版在 Han-00/misty-android-mod 独立维护
+/android-mod/

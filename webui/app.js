@@ -157,6 +157,8 @@ const App = {
     $('swProxy').checked = !!st.sysproxy_on;
 
     this.renderTable(st.accounts, st.active);
+    this.renderAnomalies(st.traffic_anomalies);
+    if(window.Traffic) Traffic.updateState(st);
   },
 
   _tickTtl(){
@@ -476,6 +478,169 @@ const App = {
       else App.toast('设置格式错误: ' + (r && r.error || '未知'), false);
     }).catch(() => App.toast('设置保存失败', false));
   },
+
+  renderAnomalies(data){
+    const box = $('anomalyRows');
+    if(!box) return;
+    $('anomalyCount').textContent = data && data.count ? `${data.count} 个时段` : '';
+    if(!data || data.status === 'no_data'){
+      box.innerHTML = '<div class="empty-feature">积累流量记录后，这里会显示消耗异常的小时。</div>';
+      return;
+    }
+    if(data.status === 'error'){
+      box.innerHTML = '<div class="empty-feature">异常消耗分析暂不可用，其余数据仍会正常更新。</div>';
+      return;
+    }
+    $('anomalyPolicy').textContent = `单小时达到 ${data.threshold_mb ?? 200} MB 且偏离同时段均值 ${data.ratio ?? 3} 倍时提示；历史不足时只判断阈值。`;
+    const rows = data.items || [];
+    if(!rows.length){ box.innerHTML = '<div class="empty-feature">近 7 天未发现达到检测条件的时段。</div>'; return; }
+    box.innerHTML = rows.map(row => {
+      const basis = row.basis === 'both' ? '阈值与历史基线均命中' : '仅阈值命中，历史基线不足';
+      const baseline = row.baseline != null ? `同时段均值 ${fmtBytes(row.baseline)}${row.ratio != null ? `，约 ${row.ratio} 倍` : ''}` : '';
+      const account = (row.accounts || []).join('、');
+      return `<div class="anomaly-row"><span class="anomaly-hour">${esc(String(row.hour || '').replace('T', ' '))}:00</span><strong>${esc(fmtBytes(row.bytes))}</strong><div class="anomaly-detail"><span>${esc(basis)}</span>${baseline ? `<p class="feature-note">${esc(baseline)}</p>` : ''}<p class="feature-note">${account ? `${row.inferred ? '推断相关账号' : '时段内换号记录'}：${esc(account)}` : '没有可关联的换号事件'}</p></div></div>`;
+    }).join('');
+  },
+
+  _rulesDraft: [],
+  _rulesLoaded: false,
+  _rulesApplying: false,
+  async loadRules(){
+    if(this._rulesApplying) return;
+    $('rulesStatus').textContent = '正在读取';
+    try{
+      if(!hasBridge()){
+        this.setRules({rules: [], builtin_domains: ['qq.com', 'bilibili.com', 'deepseek.com'], legacy_direct_domains: [], applying: false});
+        $('rulesStatus').textContent = '演示模式，未连接后端';
+        return;
+      }
+      this.setRules(await window.pywebview.api.get_routing_rules());
+    } catch(e){
+      $('rulesStatus').textContent = '读取失败，可重新读取';
+      this._rulesLoaded = false;
+      $('btnSaveRules').disabled = true;
+      this.toast('分流规则读取失败', false);
+    }
+  },
+  setRules(state){
+    if(!state || !Array.isArray(state.rules)) throw new Error('规则状态不完整');
+    this._rulesDraft = state.rules.map(r => ({domain:r.domain, action:r.action}));
+    this._rulesLoaded = true;
+    this._rulesApplying = !!state.applying;
+    const builtins = state.builtin_domains || [];
+    $('builtinCount').textContent = `（${builtins.length}）`;
+    $('builtinDomains').innerHTML = builtins.map(d => `<span class="domain-chip${this._rulesDraft.some(r => r.action === 'proxy' && (r.domain === d || r.domain.endsWith('.' + d))) ? ' overridden' : ''}">${esc(d)}</span>`).join('');
+    this.renderRules();
+    $('rulesStatus').textContent = this._rulesApplying ? '正在应用' : '已读取保存的规则';
+    $('rulesStatus').classList.toggle('pending', this._rulesApplying);
+  },
+  renderRules(){
+    const disabled = this._rulesApplying;
+    $('rulesRows').innerHTML = this._rulesDraft.length ? this._rulesDraft.map((r, i) => `<div class="rule-row"><span class="rule-domain">${esc(r.domain)}</span><span class="route-badge ${r.action === 'direct' ? 'direct' : ''}">${r.action === 'direct' ? '直连' : '走代理'}</span><button type="button" class="qbtn sm" data-rule-remove="${i}" aria-label="移除 ${esc(r.domain)} 的自定义规则" ${disabled ? 'disabled' : ''}>移除</button></div>`).join('') : '<div class="empty-feature">尚无自定义规则，当前沿用内置直连与引擎模板。</div>';
+    $('btnSaveRules').disabled = !this._rulesLoaded || disabled;
+    $('btnSaveRules').textContent = disabled ? '正在保存并应用…' : '保存并应用';
+    $('btnAddRule').disabled = disabled || !this._rulesLoaded;
+    $('btnReloadRules').disabled = disabled;
+  },
+  markRulesDirty(){
+    $('rulesStatus').textContent = '有未保存修改';
+    $('rulesStatus').classList.add('pending');
+    this.renderRules();
+  },
+  async addRule(){
+    if(!this._rulesLoaded || this._rulesApplying) return;
+    if(!hasBridge()){ this.toast('演示模式：规则未修改', false); return; }
+    const raw = $('ruleDomain').value.trim();
+    const action = $('ruleAction').value;
+    $('btnAddRule').disabled = true;
+    $('btnSaveRules').disabled = true;
+    try{
+      const result = await window.pywebview.api.preview_domain(raw);
+      if(!result || !result.ok){ this.toast(result && result.error || '请输入有效域名', false); return; }
+      if(this._rulesApplying) return;
+      const at = this._rulesDraft.findIndex(r => r.domain === result.domain);
+      const rule = {domain:result.domain, action};
+      if(at < 0) this._rulesDraft.push(rule); else this._rulesDraft[at] = rule;
+      $('ruleDomain').value = '';
+      this.markRulesDirty();
+    } catch(e){ this.toast('域名校验失败', false); }
+    finally{ this.renderRules(); }
+  },
+  async saveRules(){
+    if(this._rulesApplying || !this._rulesLoaded) return;
+    if(!hasBridge()){ this.toast('演示模式：规则未保存', false); return; }
+    this._rulesApplying = true;
+    this.renderRules();
+    $('rulesStatus').textContent = '正在应用，代理可能短暂中断';
+    try{
+      const result = await window.pywebview.api.save_routing_rules(this._rulesDraft);
+      if(!result || !result.ok){
+        this._rulesApplying = false;
+        this.renderRules();
+        $('rulesStatus').textContent = '未保存';
+        this.toast(result && result.error || '规则保存失败', false);
+      }
+    } catch(e){ this._rulesApplying = false; this.renderRules(); $('rulesStatus').textContent = '保存失败'; this.toast('规则保存失败', false); }
+  },
+  rulesSaved(result){
+    this._rulesApplying = false;
+    if(result.ok && result.state) this.setRules(result.state);
+    else this.renderRules();
+    $('rulesStatus').textContent = result.ok ? (result.applied ? '已保存并应用' : '已保存，启动代理后生效') : '应用失败，修改尚未保存';
+    $('rulesStatus').classList.toggle('pending', !result.ok);
+    this.toast(result.message || result.error || '规则处理完成', !!result.ok);
+  },
+  async previewRoute(){
+    if(!hasBridge()){ $('routePreviewResult').textContent = '演示模式：无法读取真实配置匹配。'; return; }
+    $('btnPreviewRoute').disabled = true;
+    try{
+      const r = await window.pywebview.api.preview_domain($('routePreviewDomain').value.trim());
+      if(!r || !r.ok){ $('routePreviewResult').textContent = r && r.error || '域名校验失败'; return; }
+      const source = {user:'自定义规则', builtin:'内置直连', legacy:'追加直连', template:'引擎模板'}[r.source] || '配置规则';
+      const expected = r.action === 'direct' ? '预期直连' : r.action === 'proxy' ? '预期走代理' : '由引擎模板决定，当前未确认';
+      $('routePreviewResult').textContent = `${r.domain}：${expected}，${source}${r.matched_domain ? '（' + r.matched_domain + '）' : ''}。此结果仅针对进入本引擎的域名连接，已有连接与应用自有代理需实际核验。`;
+    } catch(e){ $('routePreviewResult').textContent = '规则匹配暂不可用，请重试。'; }
+    finally{ $('btnPreviewRoute').disabled = false; }
+  },
+  async diagnose(){
+    if(!hasBridge()){ this.diagnosticsFailed('演示模式：无法采集真实连接。'); return; }
+    $('btnDiagnose').disabled = true;
+    $('btnDiagnose').textContent = '正在采集…';
+    $('diagnosticsTime').textContent = '正在采集';
+    try{
+      const r = await window.pywebview.api.diagnose_proxy($('diagnosticsApps').value.trim(), $('diagnosticsDomain').value.trim());
+      if(!r || !r.ok) this.diagnosticsFailed(r && r.error || '诊断未开始');
+    } catch(e){ this.diagnosticsFailed('诊断调用失败，请重试。'); }
+  },
+  diagnosticsFailed(message){
+    $('btnDiagnose').disabled = false;
+    $('btnDiagnose').textContent = '采集连接证据';
+    $('diagnosticsTime').textContent = '采集未完成';
+    $('diagnosticsResult').innerHTML = `<div class="empty-feature">${esc(message)}</div>`;
+  },
+  renderDiagnostics(data){
+    $('btnDiagnose').disabled = false;
+    $('btnDiagnose').textContent = '采集连接证据';
+    $('diagnosticsTime').textContent = `采集于 ${data.sampled_at || '刚刚'}`;
+    const rule = data.rule_expectation || {};
+    const sys = data.system_proxy || {};
+    const apps = data.applications || {};
+    const access = data.engine_access || {};
+    const source = {user:'自定义规则', builtin:'内置直连', legacy:'追加直连', template:'引擎模板'}[rule.source] || '规则';
+    const expected = rule.action === 'direct' ? '预期直连' : rule.action === 'proxy' ? '预期走代理' : '由引擎模板决定，当前未确认';
+    const ruleText = rule.domain ? `${rule.domain}：${expected}，来自${source}${rule.matched_domain ? ' ' + rule.matched_domain : ''}。` : (rule.message || '填写域名后可检查配置匹配。');
+    const ports = data.engine_ports || {};
+    let html = `<section class="diagnostic-section"><h2>配置与系统代理</h2><p class="feature-note">${esc(ruleText)}</p><p class="feature-note">${esc(sys.message || '系统代理状态未知')}</p><p class="feature-note">本工具端口：SOCKS ${esc(ports.socks ?? '未知')} · HTTP ${esc(ports.http ?? '未知')}。系统设置不能证明应用实际采用。</p></section>`;
+    html += '<section class="diagnostic-section"><h2>桌面应用的当前连接</h2>';
+    html += (apps.items || []).length ? apps.items.map(app => `<div class="diagnostic-app"><div class="diagnostic-title">${esc(app.query)}<span class="route-badge">${app.status === 'observed' ? (app.listener_verified ? '观测到本引擎端口连接' : '配置端口有连接，监听者未确认') : app.status === 'unknown' ? '无法确认' : '当前无本工具连接证据'}</span></div><p class="feature-note">${esc(app.message || '')}</p><p class="feature-note">进程 ${esc(app.process_count ?? 0)} 个 · 配置端口连接 ${esc(app.tool_proxy_connection_count ?? (app.tool_proxy_connections || []).length)} 条 · 其他外部连接 ${esc(app.other_external_connections ?? 0)} 条</p></div>`).join('') : `<p class="feature-note">${esc(apps.message || '未获得应用连接信息')}</p>`;
+    html += '<p class="feature-note">这是采集瞬间的 TCP 证据，无法关联某一次登录，也不覆盖 UDP、子进程代发或其他 VPN。</p></section>';
+    html += '<section class="diagnostic-section"><h2>引擎最近记录的分流</h2><p class="feature-note">记录表示连接曾进入引擎并被分流，不证明请求成功；域名记录与应用进程没有自动关联。</p>';
+    if((access.records || []).length){
+      html += '<div class="diagnostic-table-wrap"><table class="diagnostic-table"><thead><tr><th>记录时间</th><th>目标</th><th>出站</th><th>时间范围</th></tr></thead><tbody>' + access.records.map(r => `<tr><td>${esc(r.timestamp)}</td><td>${esc(r.domain)}${r.port ? ':' + esc(r.port) : ''}</td><td>${r.action === 'direct' ? '直连' : r.action === 'proxy' ? '代理' : '未知'} <span class="feature-note">${esc(r.outbound || '')}</span></td><td>${r.age_seconds == null ? '时间未知' : `历史记录，${esc(Math.round(r.age_seconds))} 秒前`}</td></tr>`).join('') + '</tbody></table></div>';
+    } else html += `<p class="feature-note">${esc(access.message || '暂无连接记录。升级后重新启动代理并发起连接，再次采集。')}</p>`;
+    html += '</section>';
+    $('diagnosticsResult').innerHTML = html;
+  },
 };
 window.App = App;
 
@@ -504,6 +669,8 @@ document.querySelectorAll('.nav-item').forEach(n => n.addEventListener('click', 
   n.classList.add('active');
   document.querySelectorAll('.page').forEach(p => p.classList.remove('show'));
   $('page-' + n.dataset.page).classList.add('show');
+  if(n.dataset.page === 'traffic' && window.Traffic) Traffic.open();
+  if(n.dataset.page === 'routing' && !App._rulesLoaded) App.loadRules();
   if(n.dataset.page === 'logs'){
     errCount = 0;
     $('logBadge').style.display = 'none';
@@ -536,6 +703,21 @@ $('swAuto').onchange = e => App.setAuto(e.target.checked);
 $('swProxy').onchange = e => App.setSysproxy(e.target.checked);
 $('swAutostart').onchange = e => App.setAutostart(e.target.checked);
 $('btnSaveSettings').onclick = () => App.saveSettings();
+$('ruleForm').onsubmit = e => { e.preventDefault(); App.addRule(); };
+$('btnSaveRules').onclick = () => App.saveRules();
+$('btnReloadRules').onclick = () => {
+  if($('rulesStatus').classList.contains('pending') && !App._rulesApplying){
+    showModal('重新读取规则', '当前未保存的修改会丢弃。', () => App.loadRules());
+  } else App.loadRules();
+};
+$('rulesRows').onclick = e => {
+  const button = e.target.closest('[data-rule-remove]');
+  if(!button || App._rulesApplying) return;
+  App._rulesDraft.splice(Number(button.dataset.ruleRemove), 1);
+  App.markRulesDirty();
+};
+$('routePreviewForm').onsubmit = e => { e.preventDefault(); App.previewRoute(); };
+$('diagnosticsForm').onsubmit = e => { e.preventDefault(); App.diagnose(); };
 
 /* ================= 快捷键（对应玻璃版的 F5 / Ctrl+T） ================= */
 document.addEventListener('keydown', e => {

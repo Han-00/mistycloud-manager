@@ -1,4 +1,4 @@
-"""账号大师 Pro 2.0 — 入口。
+"""账号大师 Pro 3.0 — 入口。
 
 全新程序（正常 Python 源码，非字节码修补）：
   自动切换 MistyCloud 账号 + 独立 v2ray 代理引擎。
@@ -61,11 +61,105 @@ def _load_ui():
     return AppUI, "ttk 版（终极降级）", notes
 
 
+def _bootstrap(config, pool, engine, switcher, monitor, log):
+    """后台启动恢复；运行时操作统一排空，关闭后不再启动代理/监控。"""
+    switch_reason = ""
+    with switcher.runtime_update_guard(wait=True) as acquired:
+        if not acquired or switcher.is_closing():
+            return
+        if not engine._discover():
+            if switcher.is_closing():
+                return
+            log("未找到 v2ray 引擎：请确认程序目录完整（分发版不要只复制 exe，"
+                "需连同 _internal 目录一起），或在 settings.json 里设置 "
+                "v2ray_dir 指向 v2ray.exe 所在目录", "err")
+            if not switcher.is_closing():
+                monitor.start()
+            return
+        if pool.count() == 0:
+            if switcher.is_closing():
+                return
+            log("账号库为空，开始自动注册首个账号...")
+            acc = pool.register_one(log=log)
+            if switcher.is_closing():
+                return
+            if acc:
+                log(f"首个账号注册成功: {acc['email']}", "ok")
+        active = pool.get_active()
+        if switcher.is_closing():
+            return
+        if not active and engine._discover():
+            log("无在用账号，执行首次换号...")
+            switch_reason = "首次启动"
+        elif not engine.is_running() and engine._discover():
+            active = pool.get_active()
+            if active:
+                from cloud_api import CloudAccount
+                cloud = CloudAccount(active["email"], active.get("password", ""))
+                recovery_error = None
+                if switcher.is_closing():
+                    return
+                logged_in = cloud.login()
+                if switcher.is_closing():
+                    return
+                if not logged_in:
+                    try:
+                        code = cloud.login_error_code() or "unknown"
+                    except Exception:
+                        code = "unknown"
+                    recovery_error = f"登录失败（{code}）"
+                else:
+                    subscribed = cloud.fetch_subscription()
+                    if switcher.is_closing():
+                        return
+                    if not subscribed:
+                        recovery_error = cloud.sub_error or "拉取订阅失败"
+                    elif not cloud.node:
+                        recovery_error = "节点解析失败（订阅无有效节点）"
+                    else:
+                        try:
+                            engine.write_config(cloud.node)
+                        except Exception as e:
+                            recovery_error = f"写入配置失败: {e}"
+                        if switcher.is_closing():
+                            return
+                        if recovery_error is None and not engine.start():
+                            recovery_error = "v2ray 启动失败"
+                        if switcher.is_closing():
+                            return
+                if recovery_error:
+                    log(f"恢复当前账号代理失败（{recovery_error}），尝试自动换号", "err")
+                    switch_reason = "恢复失败，尝试换号"
+                else:
+                    pool.set_class_expire(active["email"], cloud.class_expire)
+                    log("已恢复当前账号代理", "ok")
+    # auto_switch 自行获取守卫；不能在上述 runtime guard 内嵌套调用。
+    if switch_reason:
+        if switcher.is_closing():
+            return
+        result = switcher.auto_switch(switch_reason)
+        if switcher.is_closing():
+            return
+        if not result.ok:
+            log(f"{'首次换号' if switch_reason == '首次启动' else '自动换号'}失败: {result.error}", "err")
+    with switcher.runtime_update_guard(wait=True) as acquired:
+        if not acquired or switcher.is_closing():
+            return
+        try:
+            import sysproxy
+            sysproxy.apply_if_enabled(config, engine,
+                                      log=lambda m, *_a: log(m, "ok"))
+        except Exception:
+            pass
+        if not switcher.is_closing():
+            monitor.start()
+
+
 def main():
     if not _single_instance():
         try:
             import ctypes
-            ctypes.windll.user32.MessageBoxW(None, "账号大师 Pro 2.0 已在运行。", "提示", 0x40)
+            ctypes.windll.user32.MessageBoxW(None, "账号大师已在运行（可能已收进托盘）。更新后请从托盘菜单退出，再重新启动 3.0。", "账号大师 Pro 3.0", 0x40)
         except Exception:
             pass
         return
@@ -110,69 +204,10 @@ def main():
     except Exception:
         pass
 
-    # 启动：优先使用已有账号（无则自动注册 + 换号）
-    def bootstrap():
-        if not engine._discover():
-            _log("未找到 v2ray 引擎：请确认程序目录完整（分发版不要只复制 exe，"
-                 "需连同 _internal 目录一起），或在 settings.json 里设置 "
-                 "v2ray_dir 指向 v2ray.exe 所在目录", "err")
-            monitor.start()
-            return
-        if pool.count() == 0:
-            _log("账号库为空，开始自动注册首个账号...")
-            acc = pool.register_one(log=_log)
-            if acc:
-                _log(f"首个账号注册成功: {acc['email']}", "ok")
-        active = pool.get_active()
-        if not active and engine._discover():
-            _log("无在用账号，执行首次换号...")
-            r = switcher.auto_switch("首次启动")
-            if not r.ok:
-                _log(f"首次换号失败: {r.error}", "err")
-        elif not engine.is_running() and engine._discover():
-            # 恢复：用当前账号重新拉起代理
-            active = pool.get_active()
-            if active:
-                from cloud_api import CloudAccount
-                cloud = CloudAccount(active["email"], active.get("password", ""))
-                recovery_error = None
-                if not cloud.login():
-                    try:
-                        code = cloud.login_error_code() or "unknown"
-                    except Exception:
-                        code = "unknown"
-                    recovery_error = f"登录失败（{code}）"
-                elif not cloud.fetch_subscription():
-                    recovery_error = cloud.sub_error or "拉取订阅失败"
-                elif not cloud.node:
-                    recovery_error = "节点解析失败（订阅无有效节点）"
-                else:
-                    try:
-                        engine.write_config(cloud.node)
-                    except Exception as e:
-                        recovery_error = f"写入配置失败: {e}"
-                    if recovery_error is None and not engine.start():
-                        recovery_error = "v2ray 启动失败"
-
-                if recovery_error:
-                    _log(f"恢复当前账号代理失败（{recovery_error}），尝试自动换号", "err")
-                    r = switcher.auto_switch("恢复失败，尝试换号")
-                    if not r.ok:
-                        _log(f"自动换号失败: {r.error}", "err")
-                else:
-                    pool.set_class_expire(active["email"], cloud.class_expire)
-                    _log("已恢复当前账号代理", "ok")
-        # 系统代理收敛：开关开着且端口就绪则写入注册表（未就绪由监控每轮补齐）
-        try:
-            import sysproxy
-            sysproxy.apply_if_enabled(config, engine,
-                                      log=lambda m, *_a: _log(m, "ok"))
-        except Exception:
-            pass
-        monitor.start()
-
+    # 启动：优先使用已有账号（无则自动注册 + 换号）。
     import threading
-    threading.Thread(target=bootstrap, daemon=True).start()
+    threading.Thread(target=_bootstrap, args=(config, pool, engine, switcher, monitor, _log),
+                     daemon=True).start()
     try:
         ui.run()
     finally:

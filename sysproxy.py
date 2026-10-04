@@ -14,17 +14,20 @@ AutoConfigURL；用户原代理四元组备份在注册表专用键 HKCU\\Softwa
 """
 import sys
 
+from config import get_effective_bypass
+from routing_rules import normalize_domain
+
 _INET_KEY = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
 _BACKUP_KEY = r"Software\AccountMasterPro2"
 OVERRIDE_DEFAULT = "localhost;127.*;<local>"
 
 
 def _norm_domain(d) -> str:
-    """归一化直连域名：去空白/首尾点/「*.」前缀，小写；空串表示无效。"""
-    d = str(d or "").strip().strip(".").lower()
-    if d.startswith("*."):
-        d = d[2:]
-    return d
+    """严格规范化直连域名/URL/「*.」写法；空串表示无效。"""
+    try:
+        return normalize_domain(d)
+    except ValueError:
+        return ""
 
 
 def _bypass_string(domains) -> str:
@@ -39,11 +42,8 @@ def _bypass_string(domains) -> str:
         if not d or d in seen:
             continue
         seen.add(d)
-        if "*" in d:                     # 用户自写的通配项原样保留
-            parts.append(d)
-        else:
-            parts.append(f"*.{d}")
-            parts.append(d)
+        parts.append(f"*.{d}")
+        parts.append(d)
     return ";".join(parts)
 
 
@@ -235,7 +235,7 @@ def apply_if_enabled(config, engine, log=None) -> bool:
             return False
         st = _read_state()
         target = f"127.0.0.1:{hp}"
-        domains = config.get("proxy_bypass_domains") or []
+        domains = get_effective_bypass(config)
         if (st["enable"] == 1 and st["server"] == target
                 and st["override"] == _bypass_string(domains)):
             return True   # 已一致，静默

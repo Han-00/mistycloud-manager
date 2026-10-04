@@ -1,0 +1,53 @@
+/* 长期流量视图：一张曲线，辅助信息按需展开。 */
+.traffic-page{--traffic-muted:#9ba7bb;user-select:text}
+:root[data-mode="light"] .traffic-page{--traffic-muted:#4d5d76}
+.traffic-head{align-items:center;margin-bottom:10px}
+.traffic-head h1{margin:0}
+.traffic-controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.traffic-controls select{width:auto;min-height:32px;padding:6px 9px;font-size:12px;border-color:var(--border)}
+.traffic-page button:disabled{cursor:default;opacity:.5}
+.traffic-range{display:flex;align-items:flex-end;flex-wrap:wrap;gap:8px;margin:15px 0}
+.traffic-range[hidden]{display:none}
+.traffic-range label{display:flex;flex-direction:column;gap:4px;color:var(--traffic-muted);font-size:11px}
+.traffic-range input{font:12px var(--mono);color:var(--text);background:var(--panel-2);border:1px solid var(--border);border-radius:7px;padding:7px;min-width:130px;color-scheme:dark}
+:root[data-mode="light"] .traffic-range input{color-scheme:light}
+.traffic-range-to{align-self:flex-end;color:var(--traffic-muted);padding-bottom:8px;font-size:12px}
+.traffic-page button:focus-visible,.traffic-page input:focus-visible,.traffic-chart:focus-within{outline:2px solid var(--accent);outline-offset:3px}
+.traffic-status{font-size:12px;color:var(--traffic-muted);line-height:1.7;min-height:20px;margin:10px 0 16px;overflow-wrap:anywhere}
+.traffic-status.error{color:var(--err)}
+.traffic-chart-panel{padding:18px 20px 12px;border-radius:12px;transition:border-color .15s ease-out}
+.traffic-summary{display:flex;gap:35px;flex-wrap:wrap;margin-bottom:10px}
+.traffic-summary>div{display:flex;align-items:baseline;gap:10px}
+.traffic-summary dt{color:var(--traffic-muted);font-size:12px}
+.traffic-summary dd{font:600 19px var(--mono);color:var(--text);font-variant-numeric:tabular-nums}
+.traffic-chart{height:275px;position:relative;display:flex;align-items:center}
+.traffic-chart svg{display:block;width:100%;height:100%;overflow:visible}
+.traffic-chart .chart-grid{stroke:var(--track-bg);stroke-width:1}
+.traffic-chart .chart-label{fill:var(--traffic-muted);font:12px var(--mono)}
+.traffic-chart .chart-line{fill:none;stroke:var(--accent);stroke-width:2.2;stroke-linejoin:round;stroke-linecap:round;vector-effect:non-scaling-stroke}
+.traffic-chart .chart-area{fill:url(#trafficAreaGradient)}
+.traffic-chart .chart-hit{fill:transparent;stroke:none;cursor:crosshair;outline:none}
+.traffic-chart .chart-note{fill:var(--traffic-muted);font:12px "Segoe UI","Microsoft YaHei",sans-serif}
+.traffic-chart .chart-guide{stroke:var(--traffic-muted);stroke-width:1;stroke-dasharray:3 5;opacity:0;pointer-events:none;transition:transform .12s ease-out,opacity .12s ease-out}
+.traffic-chart .chart-guide.show{opacity:.6}
+.traffic-point{font-size:12px;color:var(--traffic-muted);min-height:22px;line-height:1.7;margin-top:4px}
+.traffic-empty{width:100%;color:var(--traffic-muted);text-align:center;line-height:1.9;padding:40px 15px;font-size:13px}
+.traffic-report{padding:14px 0 10px}
+.traffic-insights{list-style:none;color:var(--traffic-muted);font-size:12.5px;line-height:1.9;max-width:80ch;text-wrap:pretty}
+.traffic-insights li+li{margin-top:3px}
+.traffic-details{padding:12px 0;border-top:1px solid var(--border);font-size:12px}
+.traffic-details summary{cursor:pointer;color:var(--traffic-muted)}
+.traffic-details summary span{font:11px var(--mono);margin-left:6px}
+.traffic-caption,.traffic-details .traffic-insights{font-size:12px;line-height:1.8;color:var(--traffic-muted);margin-top:12px}
+.traffic-table-wrap{overflow:auto;max-height:420px;margin-top:12px}
+.traffic-table{width:100%;border-collapse:collapse;font-size:12px;text-align:left;white-space:nowrap}
+.traffic-table th{color:var(--traffic-muted);font-weight:500;position:sticky;top:0;background:var(--bg)}
+.traffic-table th,.traffic-table td{padding:10px 8px;border-bottom:1px solid var(--border)}
+.traffic-table td:nth-child(2),.traffic-table td:nth-child(3){font-family:var(--mono)}
+.traffic-table .missing{color:var(--traffic-muted)}
+.traffic-sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+.traffic-page [aria-busy="true"] .traffic-summary dd{color:var(--traffic-muted)}
+@media(max-width:800px){.traffic-chart{overflow-x:auto}.traffic-chart svg{min-width:500px;flex:none}}
+@media(max-width:600px){.app:has(.traffic-page.show) .sidebar{width:54px;padding:12px 4px}.app:has(.traffic-page.show) .sidebar .brand{padding:0 4px 20px}.app:has(.traffic-page.show) .sidebar .brand>div:last-child,.app:has(.traffic-page.show) .sidebar .foot{display:none}.app:has(.traffic-page.show) .nav-item{font-size:0;gap:0;justify-content:center;padding:10px}.app:has(.traffic-page.show) .pages{padding:16px 12px 80px}.app:has(.traffic-page.show) .banner{padding:12px;gap:8px}.app:has(.traffic-page.show) .banner .ip{display:none}.app:has(.traffic-page.show) .banner .cur-mail{font-size:11px;overflow-wrap:anywhere}.app:has(.traffic-page.show) .btn-switch{padding:9px;font-size:11px}body:has(.traffic-page.show) .drawer{left:54px}body:has(.traffic-page.show) .drawer-hint{display:none}body:has(.traffic-page.show) .drawer-tab{white-space:nowrap}.traffic-head{gap:14px}.traffic-summary{gap:12px}.traffic-summary>div{gap:8px}.traffic-summary dd{font-size:17px}.traffic-chart-panel{padding:14px}.traffic-chart{height:230px}}
+@media(prefers-reduced-motion:reduce){.traffic-page *{animation:none!important;transition:none!important}}
+@media(max-width:600px){.app:has(.traffic-page.show) .nav-item .nav-label{display:none}}

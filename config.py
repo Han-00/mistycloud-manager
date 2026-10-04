@@ -4,6 +4,7 @@
 """
 import json
 import os
+import threading
 
 from paths import base_dir
 
@@ -32,6 +33,7 @@ DEFAULTS = {
     "minimize_to_tray": True,       # 关闭按钮 → 最小化到托盘（托盘不可用时忽略）
     # 系统代理 / 日报
     "system_proxy": False,          # 系统代理开关（期望状态；崩溃恢复的事实源）
+    "proxy_domain_rules": [],       # 用户优先网站规则：[{domain, action: direct/proxy}]
     # 内置直连域名（国内站走代理反而卡）：与 settings.json 的同名键去重合并生效
     "proxy_bypass_domains": [
         # 抖音/字节系
@@ -74,12 +76,19 @@ def config_path() -> str:
     return os.path.join(base_dir(), "settings.json")
 
 
+def get_effective_bypass(config) -> list[str]:
+    """兼容调用入口：与强制代理规则冲突的系统直连例外会被扣除。"""
+    from routing_rules import effective_bypass_domains
+    return effective_bypass_domains(config)
+
+
 class Config:
     """线程安全配置对象：启动读一次，_save 时整写（保留未知字段）。"""
 
     def __init__(self, path: str | None = None):
+        self._lock = threading.RLock()
         self.path = path or config_path()
-        self.data: dict = dict(DEFAULTS)
+        self.data: dict = {k: list(v) if isinstance(v, list) else v for k, v in DEFAULTS.items()}
         self._load()
 
     def _load(self):
@@ -88,7 +97,7 @@ class Config:
                 loaded = json.load(f)
             if isinstance(loaded, dict):
                 # 合并：已知键用文件值，缺失键用默认；保留未知键（如窗口位置）
-                merged = dict(DEFAULTS)
+                merged = {k: list(v) if isinstance(v, list) else v for k, v in DEFAULTS.items()}
                 merged.update({k: v for k, v in loaded.items() if k in DEFAULTS or k.startswith("win_")})
                 for k, v in loaded.items():
                     if k not in merged:
@@ -98,9 +107,10 @@ class Config:
                 if not isinstance(merged.get("proxy_bypass_domains"), list):
                     merged["proxy_bypass_domains"] = list(DEFAULTS["proxy_bypass_domains"])
                 else:
+                    from routing_rules import _domains
                     merged["proxy_bypass_domains"] = list(dict.fromkeys(
                         [*DEFAULTS["proxy_bypass_domains"],
-                         *merged["proxy_bypass_domains"]]))
+                         *_domains(merged["proxy_bypass_domains"])]))
                 self.data = merged
         except FileNotFoundError:
             pass  # 用默认
@@ -108,17 +118,21 @@ class Config:
             pass  # 损坏文件用默认
 
     def get(self, key: str, default=None):
-        return self.data.get(key, default)
+        with self._lock:
+            return self.data.get(key, default)
 
     def set(self, key: str, value):
-        self.data[key] = value
+        with self._lock:
+            self.data[key] = value
 
-    def save(self):
+    def save(self) -> bool:
         """整写 settings.json（tmp + os.replace 原子写），保留全部字段。"""
-        tmp = self.path + ".tmp"
-        try:
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(self.data, f, ensure_ascii=False, indent=2)
-            os.replace(tmp, self.path)
-        except OSError:
-            pass
+        with self._lock:
+            tmp = self.path + ".tmp"
+            try:
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(self.data, f, ensure_ascii=False, indent=2)
+                os.replace(tmp, self.path)
+                return True
+            except (OSError, TypeError, ValueError):
+                return False

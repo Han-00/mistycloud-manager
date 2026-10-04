@@ -1,4 +1,4 @@
-# 账号大师 Pro 2.0
+# 账号大师 Pro 3.0
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Python 3.13+](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
@@ -12,8 +12,10 @@
 
 - 🔄 **自动换号** — 流量低 / 即将过期 / 链路探测失败自动切换；冷却 15 分钟；备用不足自动注册补齐
 - 📡 **v2ray 代理一体化** — 内置引擎，端口开箱即用（10808 SOCKS / 10809 HTTP），系统代理自动接管
-- 🌐 **智能分流** — 默认全走代理 + 国内域名白名单直连（v2ray routing 层双写）
-- 📊 **数据面板** — 流量热力图（4 档色阶）/ 续航预测 / 链路可用率 / 换号事件流
+- 🌐 **网站分流** — Web 界面指定域名直连或代理，用户规则覆盖内置分流，支持子域名优先与保存规则预览
+- 🔎 **代理诊断** — 分别查看系统配置、Claude / Antigravity 等应用的当前代理端口连接及引擎路由记录
+- 📊 **数据面板** — 流量热力图（4 档色阶）/ 续航预测 / 链路可用率 / 换号事件流 / 异常消耗时段与基线说明
+- 📈 **流量分析** — 独立查看长期曲线、简要分析与 CSV 明细；日汇总保留 365 天
 - 🖥️ **三套 UI 自动回退** — Web（pywebview 推荐）/ 玻璃质感（customtkinter）/ 经典 tkinter
 - 🪟 **托盘 + 自启 + 飞书通知** — 关闭 = 退出代理（无误触），可选开机自启和换号飞书推送
 - 📦 **可分发** — PyInstaller onedir 打包，v2ray 引擎内嵌，其他机器零依赖即用
@@ -38,6 +40,8 @@
 - 最小化窗口不影响代理，程序继续后台运行
 - **关闭窗口（✕）= 退出程序 = v2ray 停止 = 代理断开**
 - 状态行 `链路: 正常 (10808) · 出口 x.x.x.x · 检查于 HH:MM:SS` 是存活信号
+
+新增 Web 功能的入口、操作步骤和证据边界见 [网站分流与代理诊断](docs/网站分流与代理诊断.md)。源码版重启即可使用；已有打包版需重新构建。
 
 ## 端口
 
@@ -78,9 +82,14 @@
 
 ## 目录说明
 
+桌面客户端源码位于本仓库根目录。可选的 [Android 快速注册助手](android-companion/README.md)
+在 `android-companion/` 独立构建；它的注册和无障碍换号流程尚未在本次整理中进行真机验证。
+Android WebView MOD 现版在 [Han-00/misty-android-mod](https://github.com/Han-00/misty-android-mod)
+单独维护，本机 `android-mod/` 是旧原型，不随桌面源码提交。
+
 | 路径 | 说明 | 入 git？ |
 |------|------|----------|
-| `*.py` | 全部源码 | ✅ |
+| 根目录业务 `*.py` | 桌面客户端源码（不含 `_diag_*` 诊断草稿） | ✅ |
 | `tests/` | 回归测试（`python tests/test_xxx.py`） | ✅ |
 | `启动.bat` | 启动器 | ✅ |
 | `账号大师Pro2.spec` | PyInstaller 打包配置（可选） | ✅ |
@@ -88,12 +97,14 @@
 | `settings.json` | 配置（**含飞书密钥**） | ❌ |
 | `app.log` | 运行日志 | ❌ |
 | `v2ray_work/` | v2ray 运行时副本 | ❌ |
+| `android-companion/` | Android 助手源码与构建脚本 | ✅（不含 APK/签名） |
+| `_hist_copy.db`、`_diag_*` | 本机历史数据副本与诊断草稿 | ❌ |
 
 ## 打包分发
 
 ```bash
 python build_dist.py
-# 产出：dist/账号大师Pro2_v2.0_YYYYMMDD.zip（含 v2ray 引擎，零依赖即用）
+# 产出：dist/账号大师Pro2_v3.0_YYYYMMDD.zip（含 v2ray 引擎，零依赖即用）
 ```
 
 onedir 模式 + 排除 numpy/scipy 等大依赖，最终 ~35 MB。详见 `docs/分发使用说明.txt`。

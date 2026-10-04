@@ -53,7 +53,7 @@ class AppUI:
         self._sysproxy_on = bool(self.config.get("system_proxy", False))
 
         self.root = tk.Tk()
-        self.root.title("账号大师 Pro 2.0 — 自动换号")
+        self.root.title("账号大师 Pro 3.0 — 自动换号")
         try:
             import sv_ttk
             sv_ttk.set_theme("dark")

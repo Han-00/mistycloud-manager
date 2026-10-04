@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""打包配置 — 账号大师 Pro 2.0（onedir / 目录分发）
+"""打包配置 — 账号大师 Pro 3.0（onedir / 目录分发）
 
 为什么用 onedir 而不是 onefile：
 - onefile 每次启动要把 PyInstaller 运行时解压到临时目录，启动慢 3~5 秒，

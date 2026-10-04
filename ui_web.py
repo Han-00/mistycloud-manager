@@ -21,6 +21,7 @@ import os
 import queue
 import threading
 import time
+from contextlib import nullcontext
 
 from account_pool import AccountPool
 import autostart
@@ -28,9 +29,35 @@ from config import Config
 from settings_schema import apply_settings
 from switcher import Switcher
 from v2ray_engine import V2RayEngine
+from routing_rules import get_rule_state, normalize_domain, normalize_rules, resolve_domain
 
 WEBUI_HTML = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           "webui", "index.html")
+
+
+def _webui_app(environ, start_response):
+    """显式禁用桌面页面缓存，只提供前端资源，避免更新后仍加载旧界面。"""
+    assets = {"/": ("index.html", "text/html"),
+              "/index.html": ("index.html", "text/html"),
+              "/app.css": ("app.css", "text/css"),
+              "/traffic.css": ("traffic.css", "text/css"),
+              "/app.js": ("app.js", "text/javascript"),
+              "/traffic.js": ("traffic.js", "text/javascript")}
+    asset = assets.get(environ.get("PATH_INFO", "/"))
+    headers = [("Cache-Control", "no-cache, no-store, must-revalidate"),
+               ("Pragma", "no-cache"), ("Expires", "0")]
+    if environ.get("REQUEST_METHOD", "GET") not in ("GET", "HEAD"):
+        start_response("405 Method Not Allowed", headers + [("Allow", "GET, HEAD")])
+        return [b""]
+    if not asset:
+        start_response("404 Not Found", headers)
+        return [b""]
+    filename, content_type = asset
+    with open(os.path.join(os.path.dirname(WEBUI_HTML), filename), "rb") as source:
+        content = source.read()
+    start_response("200 OK", headers + [("Content-Type", content_type + "; charset=utf-8"),
+                                        ("Content-Length", str(len(content)))])
+    return [b"" if environ.get("REQUEST_METHOD") == "HEAD" else content]
 
 
 class _JsApi:
@@ -45,6 +72,12 @@ class _JsApi:
     # ---- 状态 ----
     def get_state(self):
         return self._ui.build_state()
+
+    def get_traffic_report(self, start=None, end=None):
+        return self._ui.get_traffic_report(start, end)
+
+    def export_traffic_report(self, start, end):
+        return self._ui.export_traffic_report(start, end)
 
     def refresh(self):
         self._ui.push_state()
@@ -100,6 +133,23 @@ class _JsApi:
         self._ui.clear_events()
         return True
 
+    def get_routing_rules(self):
+        return self._ui.get_routing_rules()
+
+    def save_routing_rules(self, rules):
+        return self._ui.save_routing_rules(rules)
+
+    def preview_domain(self, domain):
+        try:
+            domain = normalize_domain(domain)
+            return {"ok": True, "domain": domain,
+                    **resolve_domain(self._ui.config, domain)}
+        except (TypeError, ValueError) as e:
+            return {"ok": False, "error": str(e)}
+
+    def diagnose_proxy(self, app_query="", domain=""):
+        return self._ui.diagnose_proxy(app_query, domain)
+
 
 class WebAppUI:
     def __init__(self, config: Config, pool: AccountPool, switcher: Switcher,
@@ -128,6 +178,11 @@ class WebAppUI:
 
         self._auto_on = bool(self.config.get("auto_switch", True))
         self._sysproxy_on = bool(self.config.get("system_proxy", False))
+        self._rules_pending = False
+        self._rules_lock = threading.Lock()
+        self._diagnosis_lock = threading.Lock()
+        self._anomalies_cache = None
+        self._anomalies_ts = 0.0
 
     # ================= Python → JS 通道 =================
     def _emit(self, js_code: str):
@@ -246,6 +301,7 @@ class WebAppUI:
             "traffic_heatmap": heat,
             "fuel_days": fuel_days,
             "link_uptime": uptime,
+            "traffic_anomalies": self._traffic_anomalies(bool(heat)),
             "expire_ts": self._expire or 0,
             "expiry_threshold_s": float(
                 self.config.get("expiry_threshold_seconds", 1800.0)),
@@ -255,6 +311,172 @@ class WebAppUI:
             "switching": self.switcher.is_switching(),
             "accounts": accounts,
         }
+
+    def _traffic_anomalies(self, has_history):
+        """30 秒缓存，异常分析失败不阻断其余状态推送。"""
+        if self._anomalies_cache is not None and time.monotonic() - self._anomalies_ts < 30:
+            return self._anomalies_cache
+        try:
+            import anomaly
+            items = anomaly.detect(days=7)
+            result = {"status": "ready" if has_history else "no_data",
+                      "items": items[:20], "count": len(items),
+                      "threshold_mb": anomaly.THRESHOLD_MB, "ratio": anomaly.RATIO}
+        except Exception:
+            result = {"status": "error", "items": [], "count": 0,
+                      "error": "异常消耗分析暂不可用"}
+        self._anomalies_cache = result
+        self._anomalies_ts = time.monotonic()
+        return result
+
+    # ================= 流量历史与报告 =================
+    def get_traffic_report(self, start=None, end=None):
+        try:
+            import stats
+            from traffic_analysis import build_report
+            return build_report(stats.get().snapshot(), start, end)
+        except ValueError as e:
+            return {"ok": False, "error": str(e)}
+        except Exception:
+            return {"ok": False, "error": "流量历史暂不可用，请稍后重试"}
+
+    def export_traffic_report(self, start, end):
+        """用户点击导出后由原生保存对话框选路径，内容只含聚合用量。"""
+        report = self.get_traffic_report(start, end)
+        if not report.get("ok"):
+            return report
+        if self.window is None:
+            return {"ok": False, "error": "窗口尚未就绪，无法打开保存对话框"}
+        try:
+            import webview
+            from traffic_analysis import export_report
+            name = f"流量明细_{report['start']}_{report['end']}.csv"
+            selected = self.window.create_file_dialog(webview.FileDialog.SAVE,
+                                                      save_filename=name, file_types=("CSV 明细 (*.csv)",))
+            if not selected:
+                return {"ok": True, "cancelled": True}
+            path = selected[0]
+            # Windows 的保存对话框负责覆盖确认，按用户选定的路径写入。
+            with open(path, "w", encoding="utf-8-sig", newline="") as f:
+                f.write(export_report(report))
+            return {"ok": True, "filename": os.path.basename(path)}
+        except Exception:
+            return {"ok": False, "error": "报告保存失败，请检查目标目录是否可写"}
+
+    # ================= 分流规则与代理诊断 =================
+    def get_routing_rules(self):
+        return {**get_rule_state(self.config), "applying": self._rules_pending}
+
+    def save_routing_rules(self, raw):
+        try:
+            rules = normalize_rules(raw)
+        except (TypeError, ValueError) as e:
+            return {"ok": False, "error": str(e)}
+        with self._rules_lock:
+            if self._rules_pending:
+                return {"ok": False, "error": "分流规则正在应用，请稍后再试"}
+            if self.switcher.is_switching():
+                return {"ok": False, "error": "换号或恢复进行中，请完成后再保存"}
+            self._rules_pending = True
+
+        def work():
+            result = {"ok": False, "error": "分流规则未应用"}
+            try:
+                guard = getattr(self.switcher, "runtime_update_guard", None)
+                with guard() if guard else nullcontext(not self.switcher.is_switching()) as acquired:
+                    if not acquired:
+                        result["error"] = "换号或恢复进行中，请完成后再保存"
+                    elif self._closed:
+                        result["error"] = "窗口已退出，规则未应用"
+                    else:
+                        result = self._apply_routing_rules(rules)
+            except Exception as e:
+                result = {"ok": False, "error": f"规则应用异常: {e}"}
+            finally:
+                with self._rules_lock:
+                    self._rules_pending = False
+                self._emit("window.App && App.rulesSaved(%s)" % json.dumps(
+                    {**result, "state": self.get_routing_rules()}, ensure_ascii=False))
+                self.log(result.get("message") or result.get("error", "规则处理完成"),
+                         "ok" if result["ok"] else "err")
+        threading.Thread(target=work, daemon=True).start()
+        return {"ok": True, "pending": True}
+
+    def _apply_routing_rules(self, rules):
+        """由换号共用守卫保护；保存或应用失败恢复旧规则。"""
+        # 避免窗口位置/其他开关的 save 将尚未验证的新规则提前写盘。
+        with getattr(self.config, "_lock", nullcontext()):
+            return self._apply_routing_rules_locked(rules)
+
+    def _apply_routing_rules_locked(self, rules):
+        old_rules = self.config.get("proxy_domain_rules", [])
+        running = self.engine.is_running()
+        node = self.engine.current_node
+        self.config.set("proxy_domain_rules", rules)
+        touched_engine = False
+        try:
+            if self._closed:
+                raise RuntimeError("窗口已退出，取消应用规则")
+            if running:
+                if not node:
+                    raise RuntimeError("当前节点信息缺失，请恢复代理后重试")
+                touched_engine = True
+                self.engine.write_config(node)
+                if self._closed:
+                    raise RuntimeError("窗口已退出，取消重启代理")
+                if not self.engine.start() or not self.engine.wait_port(timeout=15):
+                    raise RuntimeError("代理未能按新规则启动")
+                if self._closed:
+                    raise RuntimeError("窗口已退出，取消保存规则")
+                import sysproxy
+                if (self.config.get("system_proxy", False) and sysproxy.available()
+                        and not sysproxy.apply_if_enabled(self.config, self.engine)):
+                    raise RuntimeError("系统代理例外未能同步")
+            if self.config.save() is False:
+                raise OSError("配置文件无法保存")
+            return {"ok": True, "applied": running,
+                    "message": "分流规则已保存并应用；已有长连接需重新连接"
+                    if running else "分流规则已保存，代理启动后生效"}
+        except Exception as e:
+            self.config.set("proxy_domain_rules", old_rules)
+            recovered = not touched_engine
+            if touched_engine:
+                try:
+                    self.engine.write_config(node)
+                    recovered = self._closed or bool(self.engine.start() and self.engine.wait_port(timeout=15))
+                    if recovered and not self._closed:
+                        import sysproxy
+                        if self.config.get("system_proxy", False) and sysproxy.available():
+                            recovered = bool(sysproxy.apply_if_enabled(self.config, self.engine))
+                except Exception:
+                    recovered = False
+            # 整个事务持有配置锁，新规则验证失败时不会被其他保存路径提前写盘。
+            suffix = "；已恢复旧规则" if recovered else "；旧代理恢复失败，请检查链路"
+            return {"ok": False, "error": str(e) + suffix, "recovered": recovered}
+
+    def diagnose_proxy(self, app_query="", domain=""):
+        if not isinstance(app_query, str) or len(app_query) > 160:
+            return {"ok": False, "error": "应用名称过长或格式不正确"}
+        if domain:
+            try:
+                domain = normalize_domain(domain)
+            except (TypeError, ValueError) as e:
+                return {"ok": False, "error": str(e)}
+        if not self._diagnosis_lock.acquire(blocking=False):
+            return {"ok": False, "error": "正在采集连接，请稍后再试"}
+        def work():
+            try:
+                from proxy_diagnostics import build_diagnostics
+                result = build_diagnostics(self.config, self.engine, app_query, domain)
+                result["sampled_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                self._emit("window.App && App.renderDiagnostics(%s)" % json.dumps(
+                    result, ensure_ascii=False))
+            except Exception:
+                self._emit('window.App && App.diagnosticsFailed("诊断暂不可用，请重试")')
+            finally:
+                self._diagnosis_lock.release()
+        threading.Thread(target=work, daemon=True).start()
+        return {"ok": True, "pending": True}
 
     # ================= 流量 / 有效期（后台查询）=================
     def refresh_traffic_async(self):
@@ -302,11 +524,15 @@ class WebAppUI:
 
     # ================= 手动操作（后台线程）=================
     def manual_switch(self):
+        if self._closed:
+            return
         if self.switcher.is_switching():
             self.log("已有切换进行中", "err")
             return
 
         def work():
+            if self._closed:
+                return
             self._set_busy(True, "换号中…")
             r = self.switcher.auto_switch("手动触发")
             if r.ok:
@@ -321,13 +547,15 @@ class WebAppUI:
         threading.Thread(target=work, daemon=True).start()
 
     def switch_to_email(self, email: str):
-        if not email:
+        if not email or self._closed:
             return
         if self.switcher.is_switching():
             self.log("已有切换进行中", "err")
             return
 
         def work():
+            if self._closed:
+                return
             self._set_busy(True, "切换中…")
             r = self.switcher.switch_to_email(email, reason="手动选择账号")
             if r.ok:
@@ -404,32 +632,39 @@ class WebAppUI:
         端口未就绪时不写注册表（指过去等于全网断网），状态保留，
         由监控每轮/引擎重启后收敛生效。
         """
-        on = bool(on)
-        self._sysproxy_on = on
-        self.config.set("system_proxy", on)
-        self.config.save()
-        try:
-            import sysproxy
-            if not sysproxy.available():
-                self.log("系统代理：仅支持 Windows", "err")
+        if self._closed:
+            return
+        guard = getattr(self.switcher, "runtime_update_guard", None)
+        with guard() if guard else nullcontext(True) as acquired:
+            if not acquired or self._closed:
+                self.log("运行时操作进行中，请完成后再切换系统代理", "err")
+                self.push_state()
                 return
-            if on:
-                if sysproxy.apply_if_enabled(self.config, self.engine, log=self.log):
-                    pass   # apply 内已出「已指向 127.0.0.1:端口」日志
+            on = bool(on)
+            self._sysproxy_on = on
+            self.config.set("system_proxy", on)
+            self.config.save()
+            try:
+                import sysproxy
+                if not sysproxy.available():
+                    self.log("系统代理：仅支持 Windows", "err")
+                    return
+                if on:
+                    if not sysproxy.apply_if_enabled(self.config, self.engine, log=self.log):
+                        self.log("系统代理已开启，代理端口就绪后自动生效")
                 else:
-                    self.log("系统代理已开启，代理端口就绪后自动生效")
-            else:
-                sysproxy.disable()
-                self.log("系统代理已关闭，已恢复原代理设置", "ok")
-        except Exception as e:
-            self.log(f"系统代理操作异常: {e}", "err")
+                    sysproxy.disable()
+                    self.log("系统代理已关闭，已恢复原代理设置", "ok")
+            except Exception as e:
+                self.log(f"系统代理操作异常: {e}", "err")
         self.push_state()
 
     def _restore_sysproxy(self):
         """退出前还原系统代理（退出即代理端口死，不还原会让用户断网）。"""
         try:
             import sysproxy
-            if bool(self.config.get("system_proxy", False)):
+            if (sysproxy.available() and
+                    (bool(self.config.get("system_proxy", False)) or sysproxy.has_backup())):
                 sysproxy.disable()
                 self.log("已还原系统代理设置")
         except Exception:
@@ -508,14 +743,29 @@ class WebAppUI:
 
     def _restart_engine_async(self, reason: str):
         """端口等运行参数变更后，用当前节点重启代理（后台线程）。"""
+        if self._closed:
+            return
         def work():
+            guard = getattr(self.switcher, "runtime_update_guard", None)
+            with guard() if guard else nullcontext(not self.switcher.is_switching()) as acquired:
+                if not acquired:
+                    self.log("运行时操作进行中，新参数将在下一次代理启动时应用", "err")
+                    return
+                if not self._closed:
+                    restart()
+
+        def restart():
             try:
                 node = self.engine.current_node
                 if not node:
                     return
                 self.log(f"应用新设置（{reason}），重启代理...")
                 self.engine.write_config(node)
+                if self._closed:
+                    return
                 if self.engine.start() and self.engine.wait_port(timeout=15):
+                    if self._closed:
+                        return
                     ip = self.engine.check_exit_ip(timeout=10)
                     self.log(f"代理已重启（端口 {self.engine.port}）"
                              + (f"，出口 {ip}" if ip else ""), "ok")
@@ -696,8 +946,8 @@ class WebAppUI:
         import webview
         api = _JsApi(self)
         self.window = webview.create_window(
-            "账号大师 Pro 2.0 — 自动换号",
-            WEBUI_HTML,
+            "账号大师 Pro 3.0 — 自动换号",
+            _webui_app,
             width=int(self.config.get("win_w") or 1060),
             height=int(self.config.get("win_h") or 720),
             min_size=(920, 640),
@@ -728,12 +978,25 @@ class WebAppUI:
         try:
             webview.start(debug=False, private_mode=False, storage_path=storage)
         finally:
-            self._closed = True
-            self._save_geometry()
-            if self._tray is not None:
-                try:
-                    self._tray.stop()
-                except Exception:
-                    pass
-            self._restore_sysproxy()   # 先还原系统代理，再停引擎（退出即端口死）
+            self._shutdown()
+
+    def _shutdown(self):
+        """拒绝新操作，排空已开始的引擎操作后恢复系统代理并停止引擎。"""
+        self._closed = True
+        if self.monitor is not None:
+            self.monitor.stop()
+        shutdown = getattr(self.switcher, "begin_shutdown", None)
+        if shutdown:
+            shutdown()
+        if self.monitor is not None:
+            # bootstrap 可能已通过启动检查；排空后再次停止，避免其清掉 stop 标记。
+            self.monitor.stop()
+        self._save_geometry()
+        if self._tray is not None:
+            try:
+                self._tray.stop()
+            except Exception:
+                pass
+        with getattr(self.config, "_lock", nullcontext()):
+            self._restore_sysproxy()
             self.engine.stop()

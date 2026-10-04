@@ -10,6 +10,7 @@ import json
 import os
 import threading
 import time
+from datetime import date, timedelta
 
 from paths import base_dir
 
@@ -20,12 +21,21 @@ _DEFAULT = {
     "traffic_used": 0,         # 当日消耗流量（字节）
     "traffic_base": {},        # {email: 最近观测的服务端累计已用}，跨天保留
     "hourly": {},              # {"YYYY-MM-DDTHH": 该小时消耗字节}，保留近 8 天
+    "daily": {},               # 日汇总：bytes / samples / intervals（有效增量采样）/ legacy
     "probe": {},               # {"YYYY-MM-DDTHH": {"ok": n, "n": n}}，同保留期
     "last_report_date": "",    # 最近成功推送日报的日期
     "pending_report": None,    # 待推送的上一日全天计数
 }
 
 _HOURLY_KEEP_DAYS = 8          # 小时桶保留天数（热力图用 7 天，多留 1 天余量）
+DAILY_KEEP_DAYS = 365          # 长期日汇总独立保留，小时/探测桶仍使用原保留期
+
+
+def _daily_count(value):
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError, OverflowError):
+        return 0
 
 
 def stats_path() -> str:
@@ -52,6 +62,37 @@ class Stats:
         self.data: dict = {k: (dict(v) if isinstance(v, dict) else v)
                            for k, v in _DEFAULT.items()}
         self._load()
+        self._migrate_daily()
+
+    def _migrate_daily(self):
+        """仅把仍在文件里的旧小时记录聚合为日记录，不补造已清理历史。
+
+        旧桶无法证明零用量日或采样覆盖度，legacy 保留这一边界。
+        已存在的日桶绝不重复累加，重启后迁移幂等。
+        """
+        if not isinstance(self.data.get("daily"), dict):
+            self.data["daily"] = {}
+        grouped = {}
+        hourly = self.data.get("hourly")
+        for key, value in (hourly.items() if isinstance(hourly, dict) else []):
+            try:
+                time.strptime(key, "%Y-%m-%dT%H")
+                amount = int(value)
+                if amount < 0:
+                    continue
+            except (TypeError, ValueError, OverflowError):
+                continue
+            day = key[:10]
+            grouped[day] = grouped.get(day, 0) + amount
+        for day, amount in grouped.items():
+            existing = self.data["daily"].get(day)
+            try:
+                valid = (isinstance(existing, dict) and int(existing["bytes"]) >= 0
+                         and int(existing.get("samples") or 0) >= 0)
+            except (TypeError, ValueError, KeyError, OverflowError):
+                valid = False
+            if not valid:
+                self.data["daily"][day] = {"bytes": amount, "samples": 0, "legacy": True}
 
     def _load(self):
         try:
@@ -89,6 +130,12 @@ class Stats:
             d = self.data.get(name)
             if isinstance(d, dict):
                 self.data[name] = {k: v for k, v in d.items() if k >= cutoff}
+        daily_cutoff = (date.fromisoformat(self._today())
+                        - timedelta(days=DAILY_KEEP_DAYS - 1)).isoformat()
+        daily = self.data.get("daily")
+        if isinstance(daily, dict):
+            self.data["daily"] = {k: v for k, v in daily.items()
+                                  if isinstance(k, str) and k >= daily_cutoff}
 
     def _rollover_locked(self):
         """日期翻转：旧日计数固化进 pending（已有未推送的则保留旧的），
@@ -135,7 +182,7 @@ class Stats:
         """
         try:
             used = int(used or 0)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return
         if not email or used < 0:
             return
@@ -143,14 +190,26 @@ class Stats:
             try:
                 self._rollover_locked()
                 base = self.data.setdefault("traffic_base", {})
+                daily = self.data.setdefault("daily", {})
+                day = self._today()
+                bucket = daily.get(day)
+                if not isinstance(bucket, dict):
+                    bucket = {"bytes": 0, "samples": 0, "intervals": 0, "legacy": False}
+                    daily[day] = bucket
+                bucket["bytes"] = _daily_count(bucket.get("bytes"))
+                bucket["intervals"] = _daily_count(bucket.get("intervals", bucket.get("samples")))
+                bucket["samples"] = _daily_count(bucket.get("samples")) + 1
                 prev = base.get(email)
                 if prev is None:
                     base[email] = used
                 else:
                     delta = used - int(prev)
+                    if delta >= 0:
+                        bucket["intervals"] += 1
                     if delta > 0:
                         self.data["traffic_used"] = (
                             int(self.data.get("traffic_used") or 0) + delta)
+                        bucket["bytes"] += delta
                         hourly = self.data.setdefault("hourly", {})
                         hk = self._hour_key()
                         hourly[hk] = int(hourly.get(hk) or 0) + delta
@@ -242,6 +301,8 @@ class Stats:
             d = dict(self.data)
             d["traffic_base"] = dict(d.get("traffic_base") or {})
             d["hourly"] = dict(d.get("hourly") or {})
+            d["daily"] = {k: dict(v) if isinstance(v, dict) else v
+                          for k, v in (d.get("daily") or {}).items()}
             d["probe"] = dict(d.get("probe") or {})
             return d
 
@@ -252,9 +313,20 @@ class Stats:
         cutoff = time.strftime("%Y-%m-%dT%H",
                                time.localtime(time.time() - days * 86400))
         with self._lock:
-            hourly = dict(self.data.get("hourly") or {})
-        return sorted(([k, int(v)] for k, v in hourly.items() if k >= cutoff),
-                      key=lambda x: x[0])
+            raw = self.data.get("hourly")
+            hourly = dict(raw) if isinstance(raw, dict) else {}
+        rows = []
+        for key, value in hourly.items():
+            try:
+                if not isinstance(key, str) or key < cutoff:
+                    continue
+                time.strptime(key, "%Y-%m-%dT%H")
+                amount = int(value)
+                if amount >= 0:
+                    rows.append([key, amount])
+            except (TypeError, ValueError, OverflowError):
+                continue  # 一个损坏桶不能让热力图和异常分析整批消失。
+        return sorted(rows, key=lambda x: x[0])
 
     def avg_daily_bytes(self, days: int = 3):
         """近 N 天平均日消耗（字节/天）；当天按已流逝时长折算权重。

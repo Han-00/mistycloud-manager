@@ -3,7 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>账号大师 Pro 2.0</title>
+<title>账号大师 Pro 3.0</title>
+<link rel="icon" href="data:,">
 <script>
 /* 提前应用主题与深浅模式，避免首帧闪色 */
 (function(){
@@ -15,6 +16,7 @@
 })();
 </script>
 <link rel="stylesheet" href="app.css">
+<link rel="stylesheet" href="traffic.css">
 </head>
 <body>
 <div class="app">
@@ -23,17 +25,29 @@
   <aside class="sidebar">
     <div class="brand">
       <div class="logo">账</div>
-      <div><div class="name">账号大师</div><div class="ver">Pro v2.0</div></div>
+      <div><div class="name">账号大师</div><div class="ver">Pro v3.0</div></div>
     </div>
     <nav class="nav">
       <div class="nav-item active" data-page="dash">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
         仪表盘
       </div>
+      <button class="nav-item" data-page="traffic" type="button" aria-label="流量分析">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18M6 15l4-5 4 3 6-8"/><path d="M16 5h4v4"/></svg>
+        流量分析
+      </button>
       <div class="nav-item" data-page="pool">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5.5" rx="8" ry="2.8"/><path d="M4 5.5v6c0 1.5 3.6 2.8 8 2.8s8-1.3 8-2.8v-6"/><path d="M4 11.5v6c0 1.5 3.6 2.8 8 2.8s8-1.3 8-2.8v-6"/></svg>
         账号库
       </div>
+      <button class="nav-item" data-page="routing" type="button">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="8" cy="6" r="2"/><circle cx="16" cy="12" r="2"/><circle cx="10" cy="18" r="2"/></svg>
+        网站分流
+      </button>
+      <button class="nav-item" data-page="diagnostics" type="button">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="10" cy="10" r="6"/><path d="m15 15 6 6M7 10h6M10 7v6"/></svg>
+        代理诊断
+      </button>
       <div class="nav-item" data-page="logs" id="navLogs">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 17l6-5-6-5"/><path d="M12 19h8"/></svg>
         日志
@@ -125,11 +139,65 @@
           <div class="heat-legend">按探测次数统计（监控每轮探一次）· 程序未运行的时段不计入分母</div>
         </div>
 
+        <div class="card anomaly-card">
+          <div class="label">异常消耗 · 近 7 天<span class="heat-total" id="anomalyCount"></span></div>
+          <p class="feature-note" id="anomalyPolicy">单小时达到 200 MB 且偏离同时段均值 3 倍时提示；历史不足时只判断阈值。</p>
+          <div id="anomalyRows" class="anomaly-list" aria-live="polite">等待流量记录…</div>
+          <p class="feature-note">账号按换号事件关联，无法据此定位具体软件或精确分摊消耗。</p>
+        </div>
+
         <div class="sec-title">快捷操作</div>
         <div class="quick">
           <button class="qbtn" id="qRefresh">⟳ 刷新状态</button>
           <button class="qbtn" id="qTopup">＋ 补号</button>
           <button class="qbtn danger" id="qClean">清理失效账号</button>
+        </div>
+      </section>
+
+      <!-- ===== 客户流量分析 ===== -->
+      <section class="page traffic-page" id="page-traffic" aria-labelledby="trafficTitle">
+        <div class="feature-head traffic-head">
+          <h1 id="trafficTitle">流量分析</h1>
+          <div class="traffic-controls">
+            <label class="traffic-sr" for="trafficPeriod">统计周期</label>
+            <select id="trafficPeriod" class="feature-input"><option value="7">近 7 天</option><option value="30" selected>近 30 天</option><option value="90">近 90 天</option><option value="month">本月</option><option value="custom">自定义日期</option></select>
+            <button type="button" class="qbtn sm" id="trafficRefresh">刷新</button>
+            <button class="qbtn sm" id="trafficExportCsv" type="button" disabled>导出明细</button>
+          </div>
+        </div>
+
+          <form id="trafficRangeForm" class="traffic-range" hidden>
+            <label for="trafficStart">开始日期<input type="date" id="trafficStart" required></label>
+            <span class="traffic-range-to" aria-hidden="true">至</span>
+            <label for="trafficEnd">结束日期<input type="date" id="trafficEnd" required></label>
+            <button type="submit" class="qbtn sm">查看日期</button>
+          </form>
+        <p class="traffic-status" id="trafficStatus" role="status" aria-live="polite">打开页面后读取流量历史。</p>
+
+        <div id="trafficContent" aria-busy="false">
+            <section class="card traffic-chart-panel" aria-labelledby="trafficTrendTitle">
+              <h2 id="trafficTrendTitle" class="traffic-sr">每日用量趋势</h2>
+              <dl class="traffic-summary" aria-label="所选周期用量摘要">
+                <div><dt>累计记录用量</dt><dd id="trafficTotal">—</dd></div>
+                <div><dt>日均（不含今日）</dt><dd id="trafficAverage">—</dd></div>
+              </dl>
+              <div class="traffic-chart" id="trafficChart"><div class="traffic-empty">正在准备历史曲线…</div></div>
+              <p class="traffic-point" id="trafficPoint" aria-live="polite">悬浮查看每日用量 · 断线表示无记录</p>
+            </section>
+
+          <section class="traffic-report" aria-label="简要用量分析">
+            <ul id="trafficInsights" class="traffic-insights"><li>保持客户端运行，历史记录将自动积累。</li></ul>
+          </section>
+
+          <details class="traffic-details" id="trafficDetailSection">
+            <summary>每日记录明细 <span id="trafficDetailCount"></span></summary>
+            <div class="traffic-table-wrap"><table class="traffic-table"><caption class="traffic-sr">所选日期每日记录，按日期倒序；无记录日期的用量留空。</caption><thead><tr><th scope="col">日期</th><th scope="col">记录用量</th><th scope="col">占本期记录</th><th scope="col">状态 / 来源</th></tr></thead><tbody id="trafficRows"></tbody></table></div>
+          </details>
+          <details class="traffic-details">
+            <summary>统计说明</summary>
+            <p class="traffic-caption" id="trafficScope">本机管理过的账号合计，按平台累计已用量的增量记录。</p>
+            <ul id="trafficNotes" class="traffic-insights"><li>日汇总保留 365 天，旧版已经清理的历史无法恢复。</li></ul>
+          </details>
         </div>
       </section>
 
@@ -140,6 +208,43 @@
           <div id="tblBody"></div>
           <div class="tbl-empty" id="tblEmpty" style="display:none">账号库为空，点击「补号」注册新账号</div>
         </div>
+      </section>
+
+      <!-- ===== 网站分流 ===== -->
+      <section class="page" id="page-routing">
+        <div class="feature-head"><div><h1>网站分流</h1><p class="feature-note">为域名指定直连或代理，自定义规则优先于内置规则，更具体的子域名优先。</p></div><span class="status-note" id="rulesStatus" aria-live="polite">等待读取</span></div>
+        <div class="card">
+          <form id="ruleForm" class="feature-form">
+            <label class="field-grow" for="ruleDomain">网站或域名<input id="ruleDomain" class="feature-input" placeholder="例如 claude.ai 或 https://example.com" maxlength="2048" required></label>
+            <label for="ruleAction">连接方式<select id="ruleAction" class="feature-input"><option value="proxy">走代理</option><option value="direct">直连</option></select></label>
+            <button class="qbtn" id="btnAddRule" type="submit">添加规则</button>
+          </form>
+          <div id="rulesRows" class="rule-list" aria-live="polite">正在读取规则…</div>
+          <div class="feature-actions"><button class="qbtn" id="btnSaveRules" type="button" disabled>保存并应用</button><button class="qbtn" id="btnReloadRules" type="button">重新读取</button><span class="feature-note">运行中的代理会短暂重启；已有连接需重新建立。</span></div>
+        </div>
+        <div class="card feature-block">
+          <form id="routePreviewForm" class="feature-form">
+            <label class="field-grow" for="routePreviewDomain">查看已保存规则的匹配结果<input id="routePreviewDomain" class="feature-input" placeholder="输入域名或网站地址" maxlength="2048" required></label>
+            <button class="qbtn" id="btnPreviewRoute" type="submit">查看匹配</button>
+          </form>
+          <div id="routePreviewResult" class="feature-note" role="status">匹配结果表示配置预期；实际连接路径请查看「代理诊断」。</div>
+        </div>
+        <details class="card feature-block"><summary>内置直连域名 <span id="builtinCount"></span></summary><p class="feature-note">要覆盖某个内置域名，在上方添加同域名的「走代理」规则。子域名覆盖也会同步调整浏览器的系统代理例外。</p><div id="builtinDomains" class="domain-chips"></div></details>
+      </section>
+
+      <!-- ===== 代理诊断 ===== -->
+      <section class="page" id="page-diagnostics">
+        <div class="feature-head"><div><h1>代理诊断</h1><p class="feature-note">在目标应用中操作后采集，分别查看配置预期、当前端口连接和引擎分流记录。</p></div><span id="diagnosticsTime" class="status-note" aria-live="polite">尚未采集</span></div>
+        <div class="card">
+          <form id="diagnosticsForm" class="feature-form">
+            <label class="field-grow" for="diagnosticsApps">桌面应用名称<input id="diagnosticsApps" class="feature-input" value="Claude, Antigravity" placeholder="多个名称用逗号分隔" maxlength="160"></label>
+            <label class="field-grow" for="diagnosticsDomain">网站域名（可选）<input id="diagnosticsDomain" class="feature-input" placeholder="例如 claude.ai" maxlength="2048"></label>
+            <button class="qbtn" id="btnDiagnose" type="submit">采集连接证据</button>
+          </form>
+          <p class="feature-note">系统代理开启不代表所有软件都会采用；未观测到本机端口连接也不等于软件没有使用其他代理。</p>
+        </div>
+        <div id="diagnosticsResult" class="feature-block" aria-live="polite"><div class="empty-feature">请先在应用或浏览器里发起一次操作，再点击「采集连接证据」。</div></div>
+        <p class="feature-note">这里确认连接路径，不判断平台风控；代理可用或出口稳定都不能保证账号不被限制。</p>
       </section>
 
       <!-- ===== 日志页 ===== -->
@@ -266,5 +371,6 @@
 </div>
 
 <script src="app.js"></script>
+<script src="traffic.js"></script>
 </body>
 </html>

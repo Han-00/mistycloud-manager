@@ -17,9 +17,14 @@ import time
 from config import Config
 from http_client import HttpError
 from paths import base_dir, resource_dir
+from routing_rules import direct_domains, user_rules
 
 # GUI 进程（pythonw / 打包 exe）里调 netstat/tasklist/taskkill 必须不弹控制台黑窗
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+class _DomainRule(dict):
+    """内存中标识自动生成的规则，JSON 导出仍是标准 field 规则。"""
 
 
 class V2RayEngine:
@@ -33,6 +38,7 @@ class V2RayEngine:
         self.work_dir = ""          # 实例工作目录（含 v2ray.exe 副本）
         self.port = int(config.get("proxy_port", 10808))
         self.current_node: dict | None = None
+        self.outbound_actions: dict[str, str] = {}  # 实际模板标签 → 连接诊断操作
         self._http_port_actual = 0   # 最近一次写配置的实际 HTTP inbound 端口
         self._discover()
 
@@ -184,11 +190,22 @@ class V2RayEngine:
                                  http_port)
 
         # vmess outbound 整体替换；direct/block 等其余保留
+        old_proxy_tags = [o.get("tag") for o in cfg.get("outbounds", [])
+                          if isinstance(o, dict) and o.get("protocol") == "vmess" and o.get("tag")]
         outbounds = [o for o in cfg.get("outbounds", [])
                      if isinstance(o, dict) and o.get("protocol") != "vmess"]
-        outbounds.insert(0, self._vmess_outbound(node))
+        proxy = self._vmess_outbound(node)
+        if old_proxy_tags:
+            proxy["tag"] = old_proxy_tags[0]
+            template_routing = cfg.get("routing")
+            template_rules = template_routing.get("rules", []) if isinstance(template_routing, dict) else []
+            for rule in template_rules if isinstance(template_rules, list) else []:
+                if isinstance(rule, dict) and rule.get("outboundTag") in old_proxy_tags:
+                    rule["outboundTag"] = proxy["tag"]
+        outbounds.insert(0, proxy)
         cfg["outbounds"] = outbounds
         self._apply_bypass_routing(cfg)
+        self._apply_local_access_log(cfg)
         return cfg
 
     def _fallback_config(self, node: dict, port: int) -> dict:
@@ -224,44 +241,59 @@ class V2RayEngine:
             "_http_port": http_port,
         }
         self._apply_bypass_routing(cfg)
+        self._apply_local_access_log(cfg)
         return cfg
 
     # ---- 直连分流（settings.json 的 proxy_bypass_domains）----
     def _bypass_domains(self) -> list:
-        """直连域名列表（去「*.」前缀、小写、去重保序）。"""
-        try:
-            raw = self.config.get("proxy_bypass_domains") or []
-        except Exception:
-            return []
-        out, seen = [], set()
-        for d in raw:
-            d = str(d or "").strip().strip(".").lower()
-            if d.startswith("*."):
-                d = d[2:]
-            if d and d not in seen:
-                seen.add(d)
-                out.append(d)
-        return out
+        """内置与旧追加直连清单，保留用户覆盖所需的父域兜底。"""
+        return direct_domains(self.config)
 
     def _apply_bypass_routing(self, cfg: dict) -> None:
-        """把直连域名注入 routing：已进入代理的这些域名走 direct 出去。
-
-        配置每次都从模板/兜底重建，所以这里追加不会跨次累积。
-        """
+        """用户规则（具体域名优先）> 旧直连清单 > 原模板，支持重复调用。"""
         domains = self._bypass_domains()
-        if not domains:
-            return
+        custom = user_rules(self.config)
         outbounds = cfg.setdefault("outbounds", [])
-        if not any(isinstance(o, dict) and o.get("tag") == "direct" for o in outbounds):
-            outbounds.append({"tag": "direct", "protocol": "freedom"})
         routing = cfg.get("routing")
         if not isinstance(routing, dict) or not isinstance(routing.get("rules"), list):
+            if not domains and not custom:
+                return
             routing = {"domainStrategy": "IPIfNonMatch", "rules": []}
             cfg["routing"] = routing
-        # 插到最前：保证早于模板里可能存在的「全走代理」catch-all 生效
-        routing["rules"].insert(0, {
-            "type": "field", "outboundTag": "direct", "domain": domains,
-        })
+        template_rules = [r for r in routing["rules"] if not isinstance(r, _DomainRule)]
+        if not domains and not custom:
+            routing["rules"] = template_rules
+            return
+        direct_tag = next((o.get("tag") for o in outbounds if isinstance(o, dict)
+                           and o.get("protocol") == "freedom" and o.get("tag")), None)
+        if not direct_tag:
+            used = {o.get("tag") for o in outbounds if isinstance(o, dict)}
+            direct_tag = "direct"
+            while direct_tag in used:
+                direct_tag = "manager-" + direct_tag
+            outbounds.append({"tag": direct_tag, "protocol": "freedom"})
+        proxy_tag = next((o.get("tag") for o in outbounds if isinstance(o, dict)
+                          and o.get("protocol") == "vmess" and o.get("tag")), None)
+        if any(r["action"] == "proxy" for r in custom) and not proxy_tag:
+            raise ValueError("强制代理规则需要有效的 vmess outbound")
+        custom.sort(key=lambda r: (-len(r["domain"].split(".")), -len(r["domain"])))
+        generated = [_DomainRule(type="field", outboundTag=direct_tag if r["action"] == "direct" else proxy_tag,
+                                 domain=["domain:" + r["domain"]]) for r in custom]
+        if domains:
+            generated.append(_DomainRule(type="field", outboundTag=direct_tag,
+                                         domain=["domain:" + d for d in domains]))
+        # 序列化配置被再次作为模板时，内存标记已丢失；同形规则仍只保留一份。
+        routing["rules"] = generated + [r for r in template_rules if r not in generated]
+
+    def _apply_local_access_log(self, cfg: dict) -> None:
+        """连接日志仅写入实例本地，不保留模板的外部访问日志路径。"""
+        log = cfg.get("log")
+        if not isinstance(log, dict):
+            log = {}
+            cfg["log"] = log
+        work_dir = getattr(self, "work_dir", "") or os.path.join(base_dir(), "v2ray_work")
+        log["access"] = os.path.abspath(os.path.join(work_dir, "access.log"))
+        log["loglevel"] = "warning"
 
     def write_config(self, node: dict) -> str:
         """写 config.json（原子写），返回路径。"""
@@ -281,6 +313,12 @@ class V2RayEngine:
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(cfg, f, indent=2)
         os.replace(tmp, path)
+        protocols = {"freedom": "direct", "blackhole": "block",
+                     **{p: "proxy" for p in ("vmess", "vless", "trojan", "shadowsocks", "socks", "http")}}
+        self.outbound_actions = {o["tag"]: protocols.get(o.get("protocol"), "unknown")
+                                 for o in cfg.get("outbounds", [])
+                                 if isinstance(o, dict) and isinstance(o.get("tag"), str)
+                                 and o["tag"] and o["tag"] != "api"}
         self.current_node = node
         return path
 
@@ -294,6 +332,7 @@ class V2RayEngine:
         cfg = os.path.join(self.work_dir, "config.json")
         if not os.path.exists(cfg):
             return False
+        self._rotate_access_log()
         try:
             self.proc = subprocess.Popen(
                 [os.path.join(self.work_dir, "v2ray.exe"), "-config", cfg],
@@ -305,6 +344,18 @@ class V2RayEngine:
             return True
         except OSError:
             return False
+
+    def _rotate_access_log(self) -> None:
+        """引擎停止后轮转大于 2 MB 的本地访问日志，仅保留最近一份。"""
+        if not self.work_dir:
+            return
+        source = os.path.join(self.work_dir, "access.log")
+        previous = os.path.join(self.work_dir, "access.previous.log")
+        try:
+            if os.path.getsize(source) > 2 * 1024 * 1024:
+                os.replace(source, previous)
+        except OSError:
+            pass  # 文件缺失/被外部占用/无写权限均不阻止代理启动
 
     def stop(self):
         """停止 v2ray：杀 self.proc + 按端口清理残留占用进程。"""
