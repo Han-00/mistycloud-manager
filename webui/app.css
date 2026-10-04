@@ -518,5 +518,52 @@ body{
 .uptime-pct small{font-size:14px;font-weight:600;margin-left:1px}
 .uptime-track{flex:1;height:8px;border-radius:99px;background:var(--panel-2);border:1px solid var(--border);overflow:hidden}
 .uptime-track i{display:block;height:100%;width:0;border-radius:99px;background:var(--ok);transition:width .5s ease}
+
+/* ===== 分流、诊断与异常消耗 ===== */
+button.nav-item{width:100%;font-family:inherit;text-align:left;background:transparent;cursor:pointer}
+.feature-head{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;margin-bottom:18px}
+.feature-head h1{font-size:22px;line-height:1.3;margin:0 0 8px}
+.feature-note{font-size:12.5px;line-height:1.7;color:var(--muted);margin:8px 0;overflow-wrap:anywhere}
+.feature-block{margin-top:18px}
+.feature-form{display:flex;align-items:flex-end;flex-wrap:wrap;gap:12px;margin-bottom:16px}
+.feature-form label{display:flex;flex-direction:column;gap:7px;font-size:12.5px;color:var(--text)}
+.feature-form .field-grow{flex:1;min-width:190px}
+.feature-input{display:block;width:100%;min-height:38px;box-sizing:border-box;background:var(--panel-2);border:1px solid var(--border-hi);border-radius:8px;padding:9px 11px;color:var(--text);font:inherit}
+.feature-input::placeholder{color:var(--muted);opacity:1}
+.feature-input:focus-visible,.qbtn:focus-visible,button.nav-item:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+.feature-input option{background:var(--panel-2);color:var(--text)}
+.feature-actions{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin-top:16px}
+.feature-actions .feature-note{flex:1;min-width:220px}
+.status-note{font-size:12px;color:var(--muted);white-space:nowrap;padding-top:4px}
+.status-note.pending{color:var(--warn)}
+.rule-list,.anomaly-list{display:flex;flex-direction:column}
+.rule-row{display:flex;align-items:center;gap:14px;padding:12px 0;border-bottom:1px solid var(--border)}
+.rule-domain{flex:1;min-width:0;overflow-wrap:anywhere;font-family:var(--mono);font-size:13px}
+.route-badge{display:inline-block;flex:none;padding:3px 9px;border-radius:6px;font-size:12px;font-weight:600;background:var(--acc-soft);color:var(--text)}
+.route-badge.direct{background:var(--panel-2)}
+.domain-chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.domain-chip{padding:4px 8px;border-radius:5px;background:var(--panel-2);font:11.5px var(--mono);color:var(--text);overflow-wrap:anywhere}
+.domain-chip.overridden{outline:1px solid var(--accent)}
+details.card summary{cursor:pointer;font-size:14px;font-weight:600;color:var(--text)}
+.empty-feature{color:var(--muted);padding:18px 0;font-size:13px;line-height:1.7}
+.diagnostic-section{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:18px 20px;margin-bottom:14px}
+.diagnostic-section h2{font-size:14px;font-weight:600;margin:0 0 12px}
+.diagnostic-app{padding:12px 0;border-bottom:1px solid var(--border)}
+.diagnostic-app:last-child{border-bottom:0;padding-bottom:0}
+.diagnostic-title{display:flex;align-items:center;flex-wrap:wrap;gap:10px;font-size:13px;font-weight:600}
+.diagnostic-title .route-badge{font-weight:500}
+.diagnostic-table-wrap{overflow-x:auto}
+.diagnostic-table{width:100%;border-collapse:collapse;font-size:12px;text-align:left}
+.diagnostic-table th{font-weight:500;color:var(--muted);white-space:nowrap}
+.diagnostic-table th,.diagnostic-table td{padding:10px 8px;border-bottom:1px solid var(--border);vertical-align:top}
+.diagnostic-table td{overflow-wrap:anywhere;max-width:250px;color:var(--text)}
+.anomaly-row{display:grid;grid-template-columns:135px 100px 1fr;gap:12px;padding:12px 0;border-bottom:1px solid var(--border);font-size:12.5px;align-items:start}
+.anomaly-row:last-child{border-bottom:0}
+.anomaly-hour{font-family:var(--mono)}
+.anomaly-detail .feature-note{margin:3px 0}
+.anomaly-card{margin-top:18px}
+.qbtn:disabled{cursor:wait;opacity:.55}
+@media(max-width:1050px){.feature-head{flex-direction:column;gap:0}.anomaly-row{grid-template-columns:120px 85px 1fr}.feature-form .qbtn{min-height:38px}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
 .uptime-track i.warn{background:var(--warn)}
 .uptime-track i.bad{background:var(--err)}

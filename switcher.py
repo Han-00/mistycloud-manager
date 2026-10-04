@@ -13,6 +13,7 @@
 """
 import threading
 import time
+from contextlib import contextmanager
 
 from account_pool import AccountPool
 from cloud_api import CloudAccount
@@ -67,9 +68,50 @@ class Switcher:
         self.log = log or (lambda msg: None)
         self._switching = False
         self._guard = threading.Lock()
+        self._condition = threading.Condition(self._guard)
+        self._closing = False
 
     def is_switching(self) -> bool:
-        return self._switching
+        with self._guard:
+            return self._switching
+
+    def is_closing(self) -> bool:
+        with self._guard:
+            return self._closing
+
+    def begin_shutdown(self):
+        """拒绝新操作并等待当前操作释放；须由操作之外的退出线程调用。"""
+        with self._condition:
+            self._closing = True
+            self._condition.notify_all()
+            self._condition.wait_for(lambda: not self._switching)
+
+    def _release_runtime(self):
+        with self._condition:
+            self._switching = False
+            self._condition.notify_all()
+
+    def _cancel_if_closing(self, result: SwitchResult) -> bool:
+        if self.is_closing():
+            result.error = "程序正在退出"
+            result.ok = False
+            return True
+        return False
+
+    @contextmanager
+    def runtime_update_guard(self, wait: bool = False):
+        """规则应用、自愈与换号共用守卫；启动可等待忙操作，关闭立即拒绝。"""
+        with self._condition:
+            if wait:
+                self._condition.wait_for(lambda: self._closing or not self._switching)
+            acquired = not self._closing and not self._switching
+            if acquired:
+                self._switching = True
+        try:
+            yield acquired
+        finally:
+            if acquired:
+                self._release_runtime()
 
     # ---- 对外主入口 ----
     def switch_to_email(self, email: str, notify_fail: bool = True,
@@ -87,40 +129,48 @@ class Switcher:
         start = time.time()
         if not _internal:
             with self._guard:
+                if self._closing:
+                    result.error = "程序正在退出"
+                    return result
                 if self._switching:
                     result.error = "已有切换进行中"
                     return result
                 self._switching = True
         try:
-            self._do_switch(email, result)
-        except Exception as e:
-            result.error = f"切换异常: {e}"
-            enter_cooldown(email)
+            if self._cancel_if_closing(result):
+                return result
+            try:
+                self._do_switch(email, result)
+            except Exception as e:
+                result.error = f"切换异常: {e}"
+                enter_cooldown(email)
+            result.duration = time.time() - start
+            if self._cancel_if_closing(result):
+                return result
+            # 持有 logical busy 直至记录/通知完成，退出不能越过后续操作。
+            try:
+                from stats import record_switch
+                record_switch(result.ok)
+            except Exception:
+                pass
+            events.record("switch", result.ok, email=email, reason=reason,
+                          error=result.error, proxy_ip=result.proxy_ip,
+                          direct_ip=result.direct_ip, duration=result.duration)
+            if not self.is_closing():
+                if result.ok:
+                    notify_switch(email, True, result.direct_ip, result.proxy_ip)
+                elif notify_fail:
+                    notify_switch(email, False, error=result.error)
+            return result
         finally:
             result.duration = time.time() - start
             if not _internal:
-                self._switching = False
-        # 日报统计：手动+自动、逐候选每次都计数（并发守卫早退走不到这里）
-        try:
-            from stats import record_switch
-            record_switch(result.ok)
-        except Exception:
-            pass
-        # 事件流留痕：与日报计数同步。早退的「已有切换进行中」同样不记——
-        # 那不是一次真实尝试，记进去只会污染成功率。
-        events.record("switch", result.ok, email=email, reason=reason,
-                      error=result.error, proxy_ip=result.proxy_ip,
-                      direct_ip=result.direct_ip, duration=result.duration)
-        # 通知统一在出口处理：成功必通知；失败仅在调用方要求时通知
-        # （自动换号逐候选静默，由 auto_switch 汇总后通知一次）
-        if result.ok:
-            notify_switch(email, True, result.direct_ip, result.proxy_ip)
-        elif notify_fail:
-            notify_switch(email, False, error=result.error)
-        return result
+                self._release_runtime()
 
     def _do_switch(self, email: str, result: SwitchResult):
         """切换主体流程，结果写入 result（失败时 error 非空且 ok=False）。"""
+        if self._cancel_if_closing(result):
+            return
         acc = None
         for a in self.pool.all():
             if a.get("email") == email:
@@ -132,7 +182,10 @@ class Switcher:
 
         cloud = CloudAccount(acc["email"], acc.get("password", ""))
         self.log(f"登录验证: {email}")
-        if not cloud.login():
+        logged_in = cloud.login()
+        if self._cancel_if_closing(result):
+            return
+        if not logged_in:
             code = cloud.login_error_code()
             if code == "bad_credentials":
                 result.error = "登录失败（账号已失效）"
@@ -148,7 +201,10 @@ class Switcher:
         self.pool.set_class_expire(email, cloud.class_expire)
 
         self.log("拉取订阅...")
-        if not cloud.fetch_subscription():
+        subscribed = cloud.fetch_subscription()
+        if self._cancel_if_closing(result):
+            return
+        if not subscribed:
             result.error = cloud.sub_error or "订阅拉取失败"
             if "为空" in result.error or "订阅地址" in result.error:
                 # 订阅空 = 服务端套餐已过期，标记后不再反复选中
@@ -167,13 +223,23 @@ class Switcher:
         prev_node = self.engine.current_node
 
         self.log("写入 v2ray 配置并重启...")
+        if self._cancel_if_closing(result):
+            return
         self.engine.write_config(node)
-        if not self.engine.start():
+        if self._cancel_if_closing(result):
+            return
+        started = self.engine.start()
+        if self._cancel_if_closing(result):
+            return
+        if not started:
             result.error = "v2ray 启动失败"
             self._restore_link(prev_node)
             enter_cooldown(email)
             return
-        if not self.engine.wait_port(timeout=15):
+        ready = self.engine.wait_port(timeout=15)
+        if self._cancel_if_closing(result):
+            return
+        if not ready:
             result.error = "代理端口 15 秒未就绪"
             self._restore_link(prev_node)
             enter_cooldown(email)
@@ -182,7 +248,11 @@ class Switcher:
 
         # 验证出口
         direct = self.engine.check_direct_ip()
+        if self._cancel_if_closing(result):
+            return
         proxy = self.engine.check_exit_ip()
+        if self._cancel_if_closing(result):
+            return
         result.direct_ip = direct
         result.proxy_ip = proxy
         if not proxy:
@@ -203,12 +273,20 @@ class Switcher:
 
     def _restore_link(self, prev_node):
         """切换失败后用原节点恢复代理（不放弃现有链路）。"""
-        if not prev_node:
+        if not prev_node or self.is_closing():
             return
         try:
             self.log("恢复原节点配置，保护现有链路...")
             self.engine.write_config(prev_node)
-            if self.engine.start() and self.engine.wait_port(timeout=15):
+            if self.is_closing():
+                return
+            started = self.engine.start()
+            if self.is_closing():
+                return
+            ready = started and self.engine.wait_port(timeout=15)
+            if self.is_closing():
+                return
+            if ready:
                 self.log("已恢复原节点代理")
                 events.record("restore", True, reason="换号失败后回退原节点")
             else:
@@ -225,6 +303,9 @@ class Switcher:
         """自动换号：选备用账号 → 切换 → 失败换下一个（冷却中的跳过）。"""
         r = SwitchResult()
         with self._guard:
+            if self._closing:
+                r.error = "程序正在退出"
+                return r
             if self._switching:
                 r.error = "已有切换进行中"
                 return r
@@ -239,7 +320,11 @@ class Switcher:
             last: SwitchResult = r
             max_tries = max(3, int(self.config.get("reserve_accounts", 2)) + 1)
             for _ in range(max_tries):
+                if self._cancel_if_closing(last):
+                    return last
                 acc = self.pool.pick_next(exclude_email=exclude, skip_emails=tried)
+                if self._cancel_if_closing(last):
+                    return last
                 if acc is None:
                     if not tried:
                         cooling = [a["email"] for a in self.pool.all()
@@ -263,11 +348,14 @@ class Switcher:
                 self.log(f"尝试候选: {acc['email']}")
                 last = self.switch_to_email(acc["email"], notify_fail=False,
                                             _internal=True, reason=why)
+                if self._cancel_if_closing(last):
+                    return last
                 if last.ok:
                     return last
                 self.log(f"候选失败: {acc['email']} — {last.error}，换下一个")
             self.log(f"自动换号失败: 已尝试 {len(tried)} 个候选，最后错误: {last.error}")
-            notify_switch(last.email or "（无候选）", False, error=last.error)
+            if not self.is_closing():
+                notify_switch(last.email or "（无候选）", False, error=last.error)
             return last
         finally:
-            self._switching = False
+            self._release_runtime()

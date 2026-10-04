@@ -35,7 +35,7 @@ eng = make_engine(["douyin.com", "*.ixigua.com", "douyin.com"])
 cfg = eng._fallback_config(NODE, 10808)
 first = cfg["routing"]["rules"][0]
 assert first["outboundTag"] == "direct"
-assert "douyin.com" in first["domain"] and "ixigua.com" in first["domain"]
+assert "domain:douyin.com" in first["domain"] and "domain:ixigua.com" in first["domain"]
 assert "*.douyin.com" not in first["domain"], "引擎层是后缀匹配，不该保留通配写法"
 assert len(first["domain"]) == 2, "重复项必须去掉"
 assert any(o.get("tag") == "direct" for o in cfg["outbounds"]), "direct outbound 必须存在"
@@ -53,7 +53,7 @@ cfg_t = {"inbounds": [], "outbounds": [{"tag": "proxy", "protocol": "vmess"}]}
 eng._apply_bypass_routing(cfg_t)
 assert any(isinstance(o, dict) and o.get("tag") == "direct"
            for o in cfg_t["outbounds"]), "必须补 direct outbound"
-assert cfg_t["routing"]["rules"][-1]["domain"] == ["a.com"]
+assert cfg_t["routing"]["rules"][-1]["domain"] == ["domain:a.com"]
 print("[3] 缺 routing/outbound 时自动补齐 ✓")
 
 print("\n== 直连分流注入测试通过 ==")

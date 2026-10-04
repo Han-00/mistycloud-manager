@@ -10,6 +10,7 @@
 import re
 import threading
 import time
+from contextlib import nullcontext
 
 from cloud_api import CloudAccount
 import events
@@ -95,16 +96,23 @@ class Monitor:
         node = self.engine.current_node
         if node:
             try:
-                self.engine.write_config(node)
-                if self.engine.start() and self.engine.wait_port(timeout=15):
-                    ip2 = self.engine.check_exit_ip(timeout=8)
-                    if ip2:
-                        self.log(f"代理已用当前节点恢复（出口 {ip2}）")
-                        self.last_link = {"ok": True, "ip": ip2,
-                                          "ts": time.strftime("%H:%M:%S")}
-                        events.record("heal", True, reason="连续探测失败后重启引擎恢复",
-                                      proxy_ip=ip2)
+                guard = getattr(self.switcher, "runtime_update_guard", None)
+                with guard() if guard else nullcontext(True) as acquired:
+                    if not acquired:
                         return
+                    # 在取得守卫后重读，避免恢复探测期间已被换掉的旧节点。
+                    node = self.engine.current_node
+                    if node:
+                        self.engine.write_config(node)
+                        if self.engine.start() and self.engine.wait_port(timeout=15):
+                            ip2 = self.engine.check_exit_ip(timeout=8)
+                            if ip2:
+                                self.log(f"代理已用当前节点恢复（出口 {ip2}）")
+                                self.last_link = {"ok": True, "ip": ip2,
+                                                  "ts": time.strftime("%H:%M:%S")}
+                                events.record("heal", True, reason="连续探测失败后重启引擎恢复",
+                                              proxy_ip=ip2)
+                                return
             except Exception as e:
                 self.log(f"节点恢复异常: {e}")
         # 重启无效或无节点：链路已死，换号是唯一出路（尊重自动换号开关）
@@ -208,13 +216,16 @@ class Monitor:
     # ---- 系统代理收敛 ----
     def _sysproxy_reconcile(self):
         """每轮对齐系统代理与配置开关/实际端口（兜手改注册表、换端口、外部覆盖）。"""
-        if self.engine is None:
+        if self.engine is None or self._stop.is_set():
             return
         try:
             import sysproxy
-            # apply_if_enabled 的日志回调带 tag 参数，适配成 self.log 的单参签名
-            sysproxy.apply_if_enabled(self.config, self.engine,
-                                      log=lambda m, *_a: self.log(m))
+            guard = getattr(self.switcher, "runtime_update_guard", None)
+            with guard() if guard else nullcontext(True) as acquired:
+                if acquired and not self._stop.is_set():
+                    # 与退出共享守卫，避免恢复原代理后监控再次写入。
+                    sysproxy.apply_if_enabled(self.config, self.engine,
+                                              log=lambda m, *_a: self.log(m))
         except Exception:
             pass
 

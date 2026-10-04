@@ -156,7 +156,7 @@ class GlassAppUI:
 
         ctk.set_appearance_mode(AP_MODE)
         self.root = ctk.CTk()
-        self.root.title("账号大师 Pro 2.0 — 自动换号")
+        self.root.title("账号大师 Pro 3.0 — 自动换号")
         self.root.configure(fg_color=BASE)
         self.root.geometry(self._load_geometry())
         self._build_ui()

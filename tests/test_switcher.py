@@ -35,9 +35,11 @@ def test_rotation():
     ]
 
     tried = []
+    reasons = []
 
-    def fake_switch(email, notify_fail=True, _internal=False):
+    def fake_switch(email, notify_fail=True, _internal=False, reason=""):
         tried.append(email)
+        reasons.append(reason)
         r = SwitchResult()
         r.email = email
         r.error = "模拟失败"
@@ -47,6 +49,7 @@ def test_rotation():
     r = sw.auto_switch("测试:候选全失败")
     assert len(tried) >= 3, f"应尝试多个候选，实际只试了 {tried}"
     assert len(set(tried)) == len(tried), f"候选重复尝试: {tried}"
+    assert reasons == ["测试:候选全失败"] * len(tried), f"切换原因未透传: {reasons}"
     assert not r.ok and r.error, f"应返回失败结果: ok={r.ok} error={r.error!r}"
     assert any("自动换号失败" in m for m in logs), "失败必须有日志留痕"
     print(f"[1] 候选轮换 ✓  尝试顺序: {tried}")
@@ -65,9 +68,11 @@ def test_cooldown():
     assert is_cooling("cool@x.com") and cooldown_remain("cool@x.com") > 0
 
     tried = []
+    reasons = []
 
-    def fake_switch(email, notify_fail=True, _internal=False):
+    def fake_switch(email, notify_fail=True, _internal=False, reason=""):
         tried.append(email)
+        reasons.append(reason)
         r = SwitchResult()
         r.email = email
         r.ok = True
@@ -78,6 +83,7 @@ def test_cooldown():
     assert r.ok
     assert "cool@x.com" not in tried, f"冷却账号不应被尝试: {tried}"
     assert tried == ["fresh@x.com"], f"应直接试 fresh: {tried}"
+    assert reasons == ["测试:冷却跳过"], f"切换原因未透传: {reasons}"
     print(f"[2] 冷却跳过 ✓  尝试: {tried}")
 
 
@@ -100,8 +106,10 @@ def test_switching_guard():
     """并发调用应被守卫拦截。"""
     cfg, pool, eng, sw, logs = make_switcher()
     release = []
+    reasons = []
 
-    def slow_switch(email, notify_fail=True, _internal=False):
+    def slow_switch(email, notify_fail=True, _internal=False, reason=""):
+        reasons.append(reason)
         time.sleep(0.5)
         r = SwitchResult()
         r.ok = True
@@ -122,6 +130,7 @@ def test_switching_guard():
     t1.join()
     assert results[0].ok
     assert not r2.ok and "已有切换进行中" in r2.error, f"守卫失效: {r2.error!r}"
+    assert reasons == ["A"], f"仅获守卫的调用应透传原因: {reasons}"
     print("[4] 并发守卫 ✓")
 
 
